@@ -51,15 +51,17 @@ class VisibleSyncRedditVideoCreator:
         self.textblock_width = 850
         self.min_sentence_duration = 3.5
 
-        # Text overlay transition time (overlap between text chunks)
-        self.text_transition_gap = 0.1  # Small gap between text overlays
+        # PERFECT SYNC PARAMETERS - Final corrected version
+        self.text_start_delay = 0.0  # No delay - text starts with voice
+        self.text_duration_factor = 0.95  # Use 95% of audio duration for text
+        self.text_transition_gap = 0.05  # Minimal gap between text overlays
 
-        # Voice settings - no artificial pauses, let TTS handle natural rhythm
-        self.use_artificial_voice_pauses = False  # Set to True if you want artificial pauses
-        self.voice_pause_duration = 0.3  # Only used if use_artificial_voice_pauses = True
+        # Voice settings - no artificial pauses for natural flow
+        self.use_artificial_voice_pauses = False
+        self.voice_pause_duration = 0.3  # Only used if artificial pauses enabled
 
         self.wrap_chars_per_line = 22
-        self.words_per_minute = 250  # Speed of TTS voice
+        self.words_per_minute = 250
         self.default_font = "Arial-Bold"
 
         # Debug mode flag
@@ -73,86 +75,41 @@ class VisibleSyncRedditVideoCreator:
             self.silence_path = None
 
     def _create_silence_file(self):
+        if not self.use_artificial_voice_pauses:
+            return
         from pydub import AudioSegment
         silence_duration_ms = int(self.voice_pause_duration * 1000)
         silence_audio = AudioSegment.silent(duration=silence_duration_ms)
         silence_audio.export(self.silence_path, format="wav")
         print(f"✅ Created silence file: {self.silence_path} ({self.voice_pause_duration} seconds)")
 
-        # Debug: Verify silence file was created correctly
-        if self.debug_mode:
-            self.debug_silence_file()
-
-    def debug_silence_file(self):
-        """Debug method to verify silence file creation"""
-        if not self.silence_path:
-            print("🔍 DEBUG: No silence file created (artificial pauses disabled)")
-            return
-        try:
-            from pydub import AudioSegment
-            silence_check = AudioSegment.from_file(self.silence_path)
-            actual_duration = len(silence_check) / 1000
-            print(f"🔍 DEBUG: Silence file actual duration: {actual_duration:.3f} seconds")
-            print(f"🔍 DEBUG: Expected duration: {self.voice_pause_duration} seconds")
-            if abs(actual_duration - self.voice_pause_duration) > 0.01:
-                print("⚠️  DEBUG: Duration mismatch detected!")
-        except Exception as e:
-            print(f"❌ DEBUG: Error checking silence file: {e}")
-
     def debug_timing_info(self, overlays_info):
         """Debug method to display detailed timing information"""
         if not self.debug_mode:
             return
 
-        print("\n🔍 DEBUG: Timing Information")
-        print("=" * 60)
+        print("\n🔍 DEBUG: Perfect Sync Timing Information")
+        print("=" * 70)
         total_duration = 0
         text_chunks = 0
-        silence_chunks = 0
 
         for i, timing in enumerate(overlays_info):
-            chunk_type = "SILENCE" if not timing['chunk'] else "TEXT"
-            print(
-                f"#{i + 1:2d} | {chunk_type:7s} | Start: {timing['start']:6.2f}s | Duration: {timing['duration']:6.2f}s | End: {timing['start'] + timing['duration']:6.2f}s")
+            if timing['chunk']:  # Only show text chunks
+                text_start = timing['start'] + self.text_start_delay
+                text_end = text_start + timing['text_duration']
+                audio_end = timing['start'] + timing['audio_duration']
 
-            if timing['chunk']:
-                print(f"     Text: {timing['chunk'][:50]}...")
+                print(
+                    f"#{i + 1:2d} | VOICE: {timing['start']:6.2f}s → {audio_end:6.2f}s | TEXT: {text_start:6.2f}s → {text_end:6.2f}s")
+                print(f"     Content: {timing['chunk'][:50]}...")
                 text_chunks += 1
-            else:
-                silence_chunks += 1
+                total_duration = max(total_duration, audio_end)
 
-            total_duration = max(total_duration, timing['start'] + timing['duration'])
-
-        print("=" * 60)
-        print(f"📊 Total chunks: {len(overlays_info)} (Text: {text_chunks}, Silence: {silence_chunks})")
+        print("=" * 70)
+        print(f"📊 Total text chunks: {text_chunks}")
         print(f"📊 Total duration: {total_duration:.2f} seconds")
-        print(f"📊 Text transition gap: {self.text_transition_gap} seconds")
-        print(f"📊 Artificial voice pauses: {'Enabled' if self.use_artificial_voice_pauses else 'Disabled'}")
-        if self.use_artificial_voice_pauses:
-            print(f"📊 Voice pause setting: {self.voice_pause_duration} seconds")
-
-    def debug_audio_files(self, audio_files_to_use):
-        """Debug method to check audio file durations"""
-        if not self.debug_mode:
-            return
-
-        print("\n🔍 DEBUG: Audio Files Information")
-        print("=" * 50)
-        total_audio_duration = 0
-
-        for i, audio_file in enumerate(audio_files_to_use):
-            try:
-                audio_clip = AudioFileClip(audio_file)
-                duration = audio_clip.duration
-                total_audio_duration += duration
-                file_type = "SILENCE" if "silence.wav" in audio_file else "TTS"
-                print(f"#{i + 1:2d} | {file_type:7s} | {duration:6.2f}s | {Path(audio_file).name}")
-                audio_clip.close()
-            except Exception as e:
-                print(f"❌ Error reading {audio_file}: {e}")
-
-        print("=" * 50)
-        print(f"📊 Total audio duration: {total_audio_duration:.2f} seconds")
+        print(f"📊 Text start delay: {self.text_start_delay} seconds")
+        print(f"📊 Text duration factor: {self.text_duration_factor}")
 
     def load_stories(self):
         f = self.stories_file
@@ -212,50 +169,28 @@ class VisibleSyncRedditVideoCreator:
             wavfiles.append(str(chunk_path))
         engine.runAndWait()
 
-        # Generate timing information for perfect sync
+        # Generate perfect sync timing information
         timings = []
         t = 0.0
         from moviepy.editor import AudioFileClip
-
-        # Get silence clip duration if using artificial pauses
-        silence_duration = 0
-        if self.use_artificial_voice_pauses and self.silence_path:
-            silence_clip = AudioFileClip(str(self.silence_path))
-            silence_duration = silence_clip.duration
-            silence_clip.close()
 
         for idx, (chunk, wav) in enumerate(zip(chunks, wavfiles)):
             audio_clip = AudioFileClip(str(wav))
             actual_audio_duration = audio_clip.duration
 
-            # Use actual audio duration (no minimum duration enforcement for natural flow)
-            display_duration = actual_audio_duration
+            # Calculate optimized text duration for perfect sync
+            text_duration = actual_audio_duration * self.text_duration_factor
 
             timings.append({
                 'chunk': chunk,
                 'audio_path': wav,
-                'start': t,
-                'duration': display_duration,
+                'start': t,  # Voice start time
+                'text_duration': text_duration,  # Optimized text duration
                 'audio_duration': actual_audio_duration
             })
 
-            # Move timeline forward by actual audio duration
-            t += actual_audio_duration
-
-            # Add artificial pause only if enabled and not the last chunk
-            if self.use_artificial_voice_pauses and idx < len(chunks) - 1 and silence_duration > 0:
-                timings.append({
-                    'chunk': '',
-                    'audio_path': str(self.silence_path),
-                    'start': t,
-                    'duration': silence_duration,
-                    'audio_duration': silence_duration
-                })
-                t += silence_duration
-            # Add small natural gap for text transition even without artificial pauses
-            elif not self.use_artificial_voice_pauses and idx < len(chunks) - 1:
-                t += self.text_transition_gap
-
+            # Move timeline forward by actual audio duration + small gap
+            t += actual_audio_duration + self.text_transition_gap
             audio_clip.close()
 
         # Debug timing information
@@ -266,6 +201,11 @@ class VisibleSyncRedditVideoCreator:
     def create_overlay_clip(self, text, duration, start, color='yellow'):
         import textwrap
         display_text = textwrap.fill(text, width=self.wrap_chars_per_line)
+
+        # Apply perfect sync timing adjustments - CORRECTED
+        adjusted_start = start + self.text_start_delay  # Now 0.0 for simultaneous start
+        adjusted_duration = max(0.1, duration)  # Ensure minimum duration
+
         tc = TextClip(
             txt=display_text,
             fontsize=self.fontsize_sentence,
@@ -276,11 +216,11 @@ class VisibleSyncRedditVideoCreator:
             size=(self.textblock_width, None),
             align='center'
         ).set_position(('center', 'center')) \
-            .set_start(start).set_duration(duration)
+            .set_start(adjusted_start).set_duration(adjusted_duration)
         return tc
 
     def create_video(self, story, video_index=1):
-        print(f"\n🎬 Creating Reddit Mobile-Optimized Video {video_index}...")
+        print(f"\n🎬 Creating PERFECTLY SYNCED Reddit Video {video_index}...")
 
         title = story.get('title', '')[:120]
         content = story.get('full_story', '')
@@ -300,25 +240,25 @@ class VisibleSyncRedditVideoCreator:
         audio_files_to_use = []
 
         for t in overlays_info:
-            # Add all audio files to the audio track for proper sequencing
-            if self.use_artificial_voice_pauses or t['chunk']:  # Include silence only if using artificial pauses
-                audio_files_to_use.append(t['audio_path'])
+            # Add audio files for voice track
+            audio_files_to_use.append(t['audio_path'])
 
-            # Create text overlays only for non-empty chunks
-            if not t['chunk']:
-                continue
-
+            # Create perfectly timed text overlays
             if t['start'] < bg_duration:
                 print(
-                    f"Overlay: {t['chunk'][:35]}... START: {t['start']:.2f}s DURATION: {t['duration']:.2f}s END: {t['start'] + t['duration']:.2f}s")
-                end_time = min(t['start'] + t['duration'], bg_duration)
-                dur = end_time - t['start']
-                final_overlays.append(self.create_overlay_clip(
-                    t['chunk'], duration=dur, start=t['start'], color='yellow',
-                ))
+                    f"PERFECT SYNC - Voice: {t['start']:.2f}s→{t['start'] + t['audio_duration']:.2f}s | Text: {t['start'] + self.text_start_delay:.2f}s→{t['start'] + self.text_start_delay + t['text_duration']:.2f}s")
+                print(f"Content: {t['chunk'][:50]}...")
 
-        # Debug audio files
-        self.debug_audio_files(audio_files_to_use)
+                end_time = min(t['start'] + t['text_duration'] + self.text_start_delay, bg_duration)
+                dur = end_time - (t['start'] + self.text_start_delay)
+
+                if dur > 0:
+                    final_overlays.append(self.create_overlay_clip(
+                        t['chunk'],
+                        duration=t['text_duration'],
+                        start=t['start'],
+                        color='yellow'
+                    ))
 
         from moviepy.editor import concatenate_audioclips
         overlay_audio_clips = [AudioFileClip(f) for f in audio_files_to_use]
@@ -331,8 +271,8 @@ class VisibleSyncRedditVideoCreator:
 
         all_clips = [bg_clip.set_duration(final_duration)] + final_overlays
         final = CompositeVideoClip(all_clips).set_audio(narration_clip.subclip(0, final_duration))
-        out_fn = self.output_path / f"shorts_big_{video_index:02d}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"
-        print(f"💾 Exporting: {out_fn}")
+        out_fn = self.output_path / f"shorts_FINAL_SYNC_{video_index:02d}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"
+        print(f"💾 Exporting FINAL SYNCED video: {out_fn}")
         final.write_videofile(
             str(out_fn),
             fps=30,
@@ -341,19 +281,16 @@ class VisibleSyncRedditVideoCreator:
             bitrate='9000k',
             verbose=False,
         )
+
         # Clean up
         try:
             narration_clip.close()
             for clip in overlay_audio_clips:
                 clip.close()
-                # Only remove TTS files, keep silence file for reuse
-                if self.silence_path and "silence.wav" not in clip.filename:
+                try:
                     os.remove(clip.filename)
-                elif not self.silence_path:  # Remove all temp files if no silence file
-                    try:
-                        os.remove(clip.filename)
-                    except:
-                        pass
+                except:
+                    pass
             bg_clip.close()
             final.close()
         except Exception:
@@ -364,7 +301,7 @@ class VisibleSyncRedditVideoCreator:
         stories = self.load_stories()
         for idx, story in enumerate(stories[start_index:start_index + max_videos], start=1):
             self.create_video(story, idx)
-        print("✅ All videos created with PERFECT voice-text synchronization. Review output for mobile appearance.")
+        print("✅ All videos created with FINAL PERFECT voice-text synchronization!")
 
 
 def main():
@@ -378,4 +315,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-cd
