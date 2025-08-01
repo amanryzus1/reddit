@@ -4,6 +4,7 @@ mobile_youtube_shorts_processor.py
 MOBILE YOUTUBE SHORTS VERSION - Preserves original scale and quality
 Creates videos for mobile YouTube Shorts without audio
 CROPS to mobile format instead of resizing to maintain original quality
+*** NO OVERWRITE VERSION *** - Creates unique filenames to prevent overwriting
 
 Dependencies:
 pip install moviepy==1.0.3 opencv-python pillow pyyaml
@@ -15,8 +16,7 @@ pip install moviepy==1.0.3 opencv-python pillow pyyaml
 # ===============================================
 INPUT_DIR = r"E:\nVidiaShadowPlay\for_reddit\others"
 OUTPUT_DIR = "processed_backgrounds"
-# NUMBER_OF_VIDEOS = 8  # Set to 0 or None for NO LIMIT (creates as many as possible)
-NUMBER_OF_VIDEOS = 0  # Set to 0 or None for NO LIMIT (creates as many as possible)
+NUMBER_OF_VIDEOS = 8  # Set to 0 or None for NO LIMIT (creates as many as possible)
 VIDEO_DURATION_MINUTES = 3  # Duration per video in minutes
 # ===============================================
 
@@ -72,6 +72,38 @@ def setup_moviepy_dependencies():
         return False
 
 # ===============================================
+# UNIQUE FILENAME GENERATOR
+# ===============================================
+
+def generate_unique_filename(output_dir, base_name, extension=".mp4"):
+    """Generate a unique filename that won't overwrite existing files"""
+    output_path = Path(output_dir) / f"{base_name}{extension}"
+
+    # If file doesn't exist, use the original name
+    if not output_path.exists():
+        return str(output_path)
+
+    # File exists, so create a unique version
+    counter = 1
+    while True:
+        unique_name = f"{base_name}_{counter:03d}{extension}"
+        unique_path = Path(output_dir) / unique_name
+
+        if not unique_path.exists():
+            print(f"  🔄 File exists, using: {unique_name}")
+            return str(unique_path)
+
+        counter += 1
+
+        # Safety limit to prevent infinite loop
+        if counter > 999:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            fallback_name = f"{base_name}_{timestamp}{extension}"
+            fallback_path = Path(output_dir) / fallback_name
+            print(f"  🔄 Using timestamp fallback: {fallback_name}")
+            return str(fallback_path)
+
+# ===============================================
 # MOBILE YOUTUBE SHORTS PROCESSOR
 # ===============================================
 
@@ -107,6 +139,7 @@ class MobileYoutubeShortsProcessor:
         print(f"📱 Format: Mobile YouTube Shorts (9:16 aspect ratio)")
         print(f"⭐ Quality: ORIGINAL SCALE PRESERVED (crop only, no resize)")
         print(f"🔇 Audio: DISABLED")
+        print(f"🛡️ Overwrite Protection: ENABLED (creates unique filenames)")
 
     def validate_clip(self, clip, operation_name="operation"):
         """Validate clip before operations"""
@@ -245,7 +278,7 @@ class MobileYoutubeShortsProcessor:
             return None
 
     def create_mobile_shorts(self):
-        """Create mobile YouTube Shorts preserving original quality"""
+        """Create mobile YouTube Shorts preserving original quality with NO OVERWRITE"""
         video_files = self.get_video_files()
 
         if not video_files:
@@ -333,12 +366,13 @@ class MobileYoutubeShortsProcessor:
                     clip.close()
                     continue
 
-                # Export with MAXIMUM QUALITY settings
+                # Generate UNIQUE filename (NO OVERWRITE)
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                output_filename = f"mobile_short_{video_num:02d}_{timestamp}.mp4"
-                output_path = self.output_dir / output_filename
+                base_filename = f"mobile_short_{video_num:02d}_{timestamp}"
+                output_path = generate_unique_filename(self.output_dir, base_filename, ".mp4")
+                output_filename = os.path.basename(output_path)
 
-                print(f"  💾 Exporting: {output_filename} (MAXIMUM QUALITY, NO AUDIO)")
+                print(f"  💾 Exporting: {output_filename} (MAXIMUM QUALITY, NO AUDIO, NO OVERWRITE)")
 
                 # Use original FPS and high quality settings
                 mobile_clip.write_videofile(
@@ -370,8 +404,8 @@ class MobileYoutubeShortsProcessor:
 
 def main():
     """Main function for mobile YouTube Shorts creation"""
-    print("📱 Mobile YouTube Shorts Processor - CONFIGURABLE VERSION")
-    print("=" * 65)
+    print("📱 Mobile YouTube Shorts Processor - NO OVERWRITE VERSION")
+    print("=" * 70)
 
     try:
         if not os.path.exists(INPUT_DIR):
@@ -379,8 +413,18 @@ def main():
             print(f"💡 Please update INPUT_DIR at the top of the script")
             return
 
+        # Check existing files in output directory
+        existing_files = list(Path(OUTPUT_DIR).glob("*.mp4")) if Path(OUTPUT_DIR).exists() else []
+        if existing_files:
+            print(f"📋 Found {len(existing_files)} existing files in output directory:")
+            for existing_file in existing_files[:5]:  # Show first 5
+                print(f"  - {existing_file.name}")
+            if len(existing_files) > 5:
+                print(f"  ... and {len(existing_files) - 5} more")
+            print(f"🛡️ Don't worry - new files will have unique names (no overwrite)")
+
         # Initialize processor with configurations from top
-        print("🚀 Initializing Mobile YouTube Shorts Processor...")
+        print("\n🚀 Initializing Mobile YouTube Shorts Processor...")
 
         target_duration_seconds = VIDEO_DURATION_MINUTES * 60
         processor = MobileYoutubeShortsProcessor(
@@ -403,7 +447,7 @@ def main():
         print(f"📁 Created {len(created_videos)} mobile shorts in '{OUTPUT_DIR}/'")
 
         if created_videos:
-            print("\n📋 Created mobile YouTube Shorts:")
+            print("\n📋 Created mobile YouTube Shorts (NO OVERWRITE):")
             total_size = 0
 
             for i, video_path in enumerate(created_videos, 1):
@@ -422,6 +466,7 @@ def main():
             print("  • NO AUDIO - ready for custom background music")
             print("  • Maximum quality encoding (CRF 18, 15Mbps bitrate)")
             print("  • Cropped (not resized) to maintain sharpness")
+            print("  • 🛡️ NO OVERWRITE - existing files are safe!")
 
             if NUMBER_OF_VIDEOS == 0 or NUMBER_OF_VIDEOS is None:
                 print("  • NO LIMIT mode - created as many videos as possible")
