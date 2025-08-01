@@ -1,484 +1,632 @@
-"""
-mobile_youtube_shorts_processor.py
-
-MOBILE YOUTUBE SHORTS VERSION - Preserves original scale and quality
-Creates videos for mobile YouTube Shorts without audio
-CROPS to mobile format instead of resizing to maintain original quality
-*** NO OVERWRITE VERSION *** - Creates unique filenames to prevent overwriting
-
-Dependencies:
-pip install moviepy==1.0.3 opencv-python pillow pyyaml
-
-"""
-
-# ===============================================
-# CONFIGURATION - EASY TO MODIFY
-# ===============================================
-INPUT_DIR = r"E:\nVidiaShadowPlay\for_reddit\others"
-OUTPUT_DIR = "processed_backgrounds"
-NUMBER_OF_VIDEOS = 8  # Set to 0 or None for NO LIMIT (creates as many as possible)
-VIDEO_DURATION_MINUTES = 3  # Duration per video in minutes
-# ===============================================
-
 import os
-import glob
 import random
-import gc
-from pathlib import Path
+import yaml
+import textwrap
+import json
+import re
 from datetime import datetime
+from pathlib import Path
+import nltk
+from nltk.tokenize import sent_tokenize
+from moviepy.editor import VideoFileClip, AudioFileClip, TextClip, CompositeVideoClip, concatenate_audioclips
+from moviepy.config import change_settings
+from pydub import AudioSegment
+import shutil
+import atexit
+
+# ----------- 1. IMAGEMAGICK DYNAMIC PATH CHECK ------------
+IMAGEMAGICK_PATH = r"C:\Program Files\ImageMagick-7.1.2-Q16-HDRI\magick.exe"
+if not os.path.exists(IMAGEMAGICK_PATH):
+    print(f"❌ ImageMagick not found at: {IMAGEMAGICK_PATH}")
+    raise SystemExit("Please verify and correct the ImageMagick path at the top of the script.")
+change_settings({"IMAGEMAGICK_BINARY": IMAGEMAGICK_PATH})
+print(f"✅ Using ImageMagick at: {IMAGEMAGICK_PATH}")
 
 
-# ===============================================
-# PIL COMPATIBILITY FIX
-# ===============================================
-
-def fix_pil_antialias_compatibility():
-    """Apply PIL.Image.ANTIALIAS compatibility fix for Pillow 10.0.0+"""
+# ----------- 2. NLTK Punkt Tab Fix -------------
+def fix_nltk_dependencies():
     try:
-        import PIL.Image
-        if not hasattr(PIL.Image, 'ANTIALIAS'):
-            print("🔧 Applying PIL.Image.ANTIALIAS compatibility fix...")
-            PIL.Image.ANTIALIAS = PIL.Image.LANCZOS
-            print("✅ PIL compatibility fix applied")
-        else:
-            print("✅ PIL.Image.ANTIALIAS is available")
-    except ImportError:
-        print("⚠️ PIL not available")
-
-
-def check_opencv_availability():
-    """Check if OpenCV is available (MoviePy prefers OpenCV over PIL)"""
-    try:
-        import cv2
-        print(f"✅ OpenCV available: {cv2.__version__}")
-        return True
-    except ImportError:
-        print("⚠️ OpenCV not available - MoviePy will use PIL")
-        print("  Install with: pip install opencv-python")
-        return False
-
-
-def setup_moviepy_dependencies():
-    """Setup and check all MoviePy dependencies"""
-    print("🔍 Checking MoviePy dependencies...")
-    opencv_available = check_opencv_availability()
-
-    if not opencv_available:
-        fix_pil_antialias_compatibility()
-
-    try:
-        from moviepy.editor import VideoFileClip
-        print("✅ MoviePy imports successfully")
-        return True
-    except Exception as e:
-        print(f"❌ MoviePy import failed: {e}")
-        return False
-
-
-# ===============================================
-# UNIQUE FILENAME GENERATOR
-# ===============================================
-
-def generate_unique_filename(output_dir, base_name, extension=".mp4"):
-    """Generate a unique filename that won't overwrite existing files"""
-    output_path = Path(output_dir) / f"{base_name}{extension}"
-
-    # If file doesn't exist, use the original name
-    if not output_path.exists():
-        return str(output_path)
-
-    # File exists, so create a unique version
-    counter = 1
-    while True:
-        unique_name = f"{base_name}_{counter:03d}{extension}"
-        unique_path = Path(output_dir) / unique_name
-
-        if not unique_path.exists():
-            print(f"  🔄 File exists, using: {unique_name}")
-            return str(unique_path)
-
-        counter += 1
-
-        # Safety limit to prevent infinite loop
-        if counter > 999:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-            fallback_name = f"{base_name}_{timestamp}{extension}"
-            fallback_path = Path(output_dir) / fallback_name
-            print(f"  🔄 Using timestamp fallback: {fallback_name}")
-            return str(fallback_path)
-
-
-# ===============================================
-# MOBILE YOUTUBE SHORTS PROCESSOR
-# ===============================================
-
-class MobileYoutubeShortsProcessor:
-    def __init__(self, input_dir, output_dir, target_count=8, target_duration=180):
-        """Initialize for mobile YouTube Shorts with configurable settings"""
-
-        if not setup_moviepy_dependencies():
-            raise RuntimeError("MoviePy dependencies not properly configured")
-
-        from moviepy.editor import VideoFileClip, concatenate_videoclips
-        self.VideoFileClip = VideoFileClip
-        self.concatenate_videoclips = concatenate_videoclips
-
-        self.input_dir = Path(input_dir)
-        self.output_dir = Path(output_dir)
-        self.output_dir.mkdir(exist_ok=True)
-
-        # Mobile YouTube Shorts specifications
-        self.target_duration = target_duration  # Duration in seconds
-        self.mobile_aspect_ratio = 9 / 16  # Mobile vertical ratio
-        self.target_count = target_count  # Number of videos (0 or None for no limit)
-
-        print(f"📹 Input directory: {self.input_dir}")
-        print(f"📁 Output directory: {self.output_dir}")
-
-        if self.target_count == 0 or self.target_count is None:
-            print(f"🎯 Target: NO LIMIT - create as many videos as possible")
-            print(f"⏱️ Duration: {self.target_duration / 60:.1f} minutes each")
-        else:
-            print(f"🎯 Target: {self.target_count} videos of {self.target_duration / 60:.1f} minutes each")
-
-        print(f"📱 Format: Mobile YouTube Shorts (9:16 aspect ratio)")
-        print(f"⭐ Quality: ORIGINAL SCALE PRESERVED (crop only, no resize)")
-        print(f"🔇 Audio: DISABLED")
-        print(f"🛡️ Overwrite Protection: ENABLED (creates unique filenames)")
-
-    def validate_clip(self, clip, operation_name="operation"):
-        """Validate clip before operations"""
-        if clip is None:
-            print(f"❌ {operation_name}: Clip is None")
-            return False
-
+        nltk.data.find('tokenizers/punkt_tab')
+    except LookupError:
         try:
-            duration = clip.duration
-            if duration <= 0:
-                print(f"❌ {operation_name}: Invalid duration {duration}")
-                return False
+            nltk.data.find('tokenizers/punkt')
+        except LookupError:
+            nltk.download('punkt')
 
-            test_frame = clip.get_frame(0)
-            if test_frame is None:
-                print(f"❌ {operation_name}: Cannot access frames")
-                return False
 
-            return True
-        except Exception as e:
-            print(f"❌ {operation_name}: Clip validation failed - {e}")
-            return False
+fix_nltk_dependencies()
 
-    def get_video_files(self):
-        """Get all video files from the input directory"""
-        video_extensions = ['*.mp4', '*.avi', '*.mov', '*.mkv', '*.wmv', '*.flv', '*.webm']
-        video_files = []
 
-        for extension in video_extensions:
-            pattern = self.input_dir / extension
-            video_files.extend(glob.glob(str(pattern)))
+# ----------- 3. TEMP FILE CLEANUP MANAGER -------------
+class TempFileManager:
+    def __init__(self):
+        self.temp_folders = set()
+        self.temp_files = set()
+        atexit.register(self.cleanup_all)
 
-        video_files.sort(key=lambda x: os.path.getctime(x))
+    def register_temp_folder(self, folder_path):
+        self.temp_folders.add(Path(folder_path))
 
-        print(f"📁 Found {len(video_files)} video files:")
-        for i, file in enumerate(video_files):
-            filename = os.path.basename(file)
-            file_size = os.path.getsize(file) / (1024 * 1024)
-            print(f"  {i + 1}. {filename} ({file_size:.1f} MB)")
+    def register_temp_file(self, file_path):
+        self.temp_files.add(Path(file_path))
 
-        return video_files
+    def cleanup_all(self):
+        print(f"\n🧹 Starting temp cleanup...")
+        files_cleaned = 0
+        folders_cleaned = 0
 
-    def analyze_video_duration(self, video_path):
-        """Analyze video duration and return in seconds"""
+        for temp_file in list(self.temp_files):
+            if temp_file.exists():
+                try:
+                    temp_file.unlink()
+                    files_cleaned += 1
+                except:
+                    pass
+
+        for temp_folder in list(self.temp_folders):
+            if temp_folder.exists():
+                try:
+                    shutil.rmtree(temp_folder)
+                    folders_cleaned += 1
+                except:
+                    pass
+
+        print(f"✅ Cleanup complete: {files_cleaned} files, {folders_cleaned} folders")
+
+
+# Global temp file manager
+temp_manager = TempFileManager()
+
+
+class FixedSequentialRedditVideoCreator:
+    def __init__(self, stories_file="viral_stories_full.yaml",
+                 background_videos_path="processed_backgrounds/",
+                 output_path="reddit_shorts/"):
+        self.stories_file = Path(stories_file)
+        self.background_path = Path(background_videos_path)
+        self.output_path = Path(output_path)
+        self.temp_path = Path("temp_sequential")
+
+        # Create directories
+        self.output_path.mkdir(exist_ok=True, parents=True)
+        self.temp_path.mkdir(exist_ok=True, parents=True)
+        temp_manager.register_temp_folder(self.temp_path)
+
+        # Video settings - FIXED FOR YOUR REQUIREMENTS
+        self.fontsize_sentence = 90
+        self.textblock_width = 850
+        self.text_start_delay = 0.0
+        self.text_duration_factor = 1.0
+        self.text_transition_gap = 0.15
+        self.wrap_chars_per_line = 22
+        self.words_per_minute = 230  # Fast speech
+        self.default_font = "Arial-Bold"
+
+        # STRICT LIMITS - EXACTLY WHAT YOU ASKED FOR
+        self.max_stories_total = 3  # Total 3 stories max
+        self.max_videos_per_story = 3  # Max 3 videos per story
+        self.max_video_duration = 120  # 2 minutes max per video (120 seconds)
+
+        # Background video cycling
+        self.video_counter = 0
+
+        self.debug_mode = True
+
+        print(f"🚀 FIXED Sequential Video Creator (NO THREADING)")
+        print(f"📁 Output: {self.output_path}")
+        print(f"🎵 Speech: {self.words_per_minute} WPM")
+        print(f"📚 Max stories: {self.max_stories_total}")
+        print(f"📺 Max videos per story: {self.max_videos_per_story}")
+        print(f"⏰ Max video duration: {self.max_video_duration}s (2 min)")
+
+    def load_stories(self):
+        """Load stories and sort by popularity"""
+        f = self.stories_file
         try:
-            clip = self.VideoFileClip(video_path)
-            duration = clip.duration
-            clip.close()
-            return duration
-        except Exception as e:
-            print(f"❌ Error analyzing {video_path}: {e}")
-            return 0
-
-    def preprocess_video(self, clip):
-        """Preprocess video - PRESERVE ORIGINAL QUALITY"""
-        try:
-            print("  🔧 Preprocessing (preserving original quality)...")
-
-            # Remove audio only
-            if hasattr(clip, 'audio') and clip.audio:
-                clip = clip.without_audio()
-
-            # PRESERVE ORIGINAL FPS - don't change it
-            print(f"  📊 Keeping original FPS: {clip.fps}")
-
-            return clip
-
-        except Exception as e:
-            print(f"  ⚠️ Preprocessing failed: {e}")
-            return clip
-
-    def crop_to_mobile_format(self, clip):
-        """Crop to mobile format preserving ORIGINAL SCALE and quality"""
-        try:
-            if not self.validate_clip(clip, "Mobile crop input"):
-                return None
-
-            original_w = clip.w
-            original_h = clip.h
-            original_ratio = original_w / original_h
-            target_ratio = self.mobile_aspect_ratio  # 9:16 = 0.5625
-
-            print(f"  📊 Original: {original_w}x{original_h} (ratio: {original_ratio:.3f})")
-            print(f"  🎯 Target ratio: {target_ratio:.3f} (9:16 mobile)")
-
-            # Remove audio if present
-            if hasattr(clip, 'audio') and clip.audio:
-                working_clip = clip.without_audio()
+            if f.suffix == ".yaml":
+                with open(f, 'r', encoding='utf-8') as h:
+                    stories = yaml.safe_load(h)
+            elif f.suffix == ".json":
+                with open(f, 'r', encoding='utf-8') as h:
+                    stories = json.load(h)
             else:
-                working_clip = clip.copy()
+                raise Exception(f"Story file suffix not recognized: {f}")
 
-            if not self.validate_clip(working_clip, "Working clip"):
-                return None
+            # Sort by score (popularity)
+            stories_with_scores = []
+            for story in stories:
+                score = story.get('score', 0)
+                if isinstance(score, str):
+                    try:
+                        score = int(score.replace(',', '').replace('k', '000').replace('K', '000'))
+                    except:
+                        score = 0
+                stories_with_scores.append((story, score))
 
-            if original_ratio > target_ratio:
-                # Video is wider than target - crop width (keep full height)
-                new_width = int(original_h * target_ratio)
-                x_center = original_w / 2
+            stories_with_scores.sort(key=lambda x: x[1], reverse=True)
+            sorted_stories = [story for story, score in stories_with_scores]
 
-                print(f"  ✂️ Cropping width: {original_w} → {new_width} (preserving height {original_h})")
-
-                cropped_clip = working_clip.crop(
-                    x_center=x_center,
-                    width=new_width,
-                    height=original_h
-                )
-            else:
-                # Video is taller than target - crop height (keep full width)
-                new_height = int(original_w / target_ratio)
-                y_center = original_h / 2
-
-                print(f"  ✂️ Cropping height: {original_h} → {new_height} (preserving width {original_w})")
-
-                cropped_clip = working_clip.crop(
-                    y_center=y_center,
-                    width=original_w,
-                    height=new_height
-                )
-
-            working_clip.close()
-
-            if not self.validate_clip(cropped_clip, "Final cropped clip"):
-                cropped_clip.close()
-                return None
-
-            final_w = cropped_clip.w
-            final_h = cropped_clip.h
-            final_ratio = final_w / final_h
-
-            print(f"  ✅ Final: {final_w}x{final_h} (ratio: {final_ratio:.3f}) - ORIGINAL SCALE PRESERVED")
-
-            return cropped_clip
+            print(f"📚 Loaded {len(sorted_stories)} total stories")
+            return sorted_stories
 
         except Exception as e:
-            print(f"  ❌ Error in mobile crop: {e}")
-            return None
-
-    def create_mobile_shorts(self):
-        """Create mobile YouTube Shorts preserving original quality with NO OVERWRITE"""
-        video_files = self.get_video_files()
-
-        if not video_files:
-            print("❌ No video files found in the directory")
+            print(f"❌ Error loading stories: {e}")
             return []
 
-        print(f"\n🎬 Analyzing video durations...")
+    def get_background_videos(self):
+        videos = []
+        for ext in ('.mp4', '.avi', '.mov', '.mkv', '.wmv'):
+            videos += list(Path(self.background_path).glob(f"*{ext}"))
+        if not videos:
+            raise SystemExit("Background video folder empty!")
+        print(f"🎬 Found {len(videos)} background videos")
+        return videos
 
-        video_pool = []
-        total_duration = 0
+    def cycle_background_video(self, background_videos):
+        """Cycle through background videos for each new video"""
+        bg_video = background_videos[self.video_counter % len(background_videos)]
+        self.video_counter += 1
+        print(f"🎮 Using background: {bg_video.name} (video #{self.video_counter})")
+        return bg_video
 
-        for video_file in video_files:
-            duration = self.analyze_video_duration(video_file)
-            if duration > 10:
-                video_pool.append({
-                    'path': video_file,
-                    'duration': duration,
-                    'filename': os.path.basename(video_file)
-                })
-                total_duration += duration
-                print(f"  📹 {os.path.basename(video_file)}: {duration:.1f}s ({duration / 60:.1f}m)")
+    def generate_smart_filename(self, story_title, story_index, part_number=None, total_parts=1):
+        """Generate smart filename from story title"""
+        title = story_title.lower().strip()
 
-        print(f"\n📊 Total available content: {total_duration:.1f}s ({total_duration / 60:.1f}m)")
+        # Remove Reddit prefixes
+        prefixes_to_remove = ['aita for', 'aita', 'tifu by', 'tifu', 'my', 'i', 'a', 'an', 'the']
+        for prefix in prefixes_to_remove:
+            if title.startswith(prefix):
+                title = title[len(prefix):].strip()
+
+        # Extract meaningful words
+        words = re.findall(r'\b[a-zA-Z]+\b', title)
+        stop_words = {'i', 'me', 'my', 'we', 'you', 'he', 'she', 'it', 'they', 'the', 'and', 'but', 'or', 'for', 'with',
+                      'to'}
+        meaningful_words = [word for word in words if word not in stop_words and len(word) > 2]
+
+        if len(meaningful_words) < 3:
+            meaningful_words = [word for word in words if len(word) > 2][:4]
+
+        selected_words = meaningful_words[:4]
+        filename_base = "_".join(selected_words[:4])
+        filename_base = re.sub(r'[^\w\-_]', '', filename_base)
+
+        if len(filename_base) > 40:
+            filename_base = filename_base[:40]
+
+        if total_parts > 1:
+            return f"{filename_base}_{story_index:03d}_part_{part_number:02d}"
+        else:
+            return f"{filename_base}_{story_index:03d}"
+
+    def split_story_for_2min_limit(self, story):
+        """Split story into parts based on 2-minute limit"""
+        title = story.get('title', '')
+        content = story.get('full_story', '')
+        full_script = f"{title}. {content}"
+
+        total_words = len(full_script.split())
+        estimated_duration = (total_words * 60) / self.words_per_minute
+
+        print(f"📝 Story: {total_words} words (~{estimated_duration:.1f}s)")
+
+        # If fits in 2 minutes, don't split
+        if estimated_duration <= self.max_video_duration:
+            print(f"✅ Single video ({estimated_duration:.1f}s ≤ {self.max_video_duration}s)")
+            return [full_script]
+
+        # Calculate parts needed (max 3 per story)
+        ideal_parts = int(estimated_duration / self.max_video_duration) + 1
+        actual_parts = min(ideal_parts, self.max_videos_per_story)
+
+        if ideal_parts > self.max_videos_per_story:
+            print(f"⚠️ Would need {ideal_parts} parts, limiting to {self.max_videos_per_story}")
+
+        print(f"📊 Creating {actual_parts} parts for 2-minute limit")
+
+        # Split content into sentences
+        sentences = [s.strip() for s in sent_tokenize(content) if s.strip()]
+        sentences_per_part = len(sentences) // actual_parts
+
+        parts = []
+        for part_num in range(actual_parts):
+            if part_num == actual_parts - 1:
+                # Last part gets remaining sentences
+                part_sentences = sentences[part_num * sentences_per_part:]
+            else:
+                part_sentences = sentences[part_num * sentences_per_part:(part_num + 1) * sentences_per_part]
+
+            part_content = f"{title}. " + " ".join(part_sentences)
+            if part_content.strip():
+                parts.append(part_content.strip())
+
+        for i, part in enumerate(parts, 1):
+            part_words = len(part.split())
+            part_duration = (part_words * 60) / self.words_per_minute
+            print(f"   Part {i}: {part_words} words (~{part_duration:.1f}s)")
+
+        return parts
+
+    def split_and_sync_chunks(self, story_text):
+        """Split story part into chunks"""
+        sentences = [s.strip() for s in sent_tokenize(story_text) if s.strip()]
+
+        min_length = 8
+        max_length = 25
+        chunks = []
+        buffer = ""
+
+        for s in sentences:
+            buffer_words = len(buffer.split())
+            sentence_words = len(s.split())
+
+            if buffer_words < min_length:
+                buffer = (buffer + " " + s).strip()
+            elif buffer_words + sentence_words <= max_length:
+                buffer = (buffer + " " + s).strip()
+            else:
+                if buffer:
+                    chunks.append(buffer)
+                buffer = s
+
+        if buffer:
+            chunks.append(buffer)
+
+        print(f"🔍 Split into {len(chunks)} chunks")
+        return [c for c in chunks if c]
+
+    def generate_tts_chunks_and_durations(self, chunks):
+        """Generate TTS - NO THREADING"""
+        import pyttsx3
+        engine = pyttsx3.init()
+        engine.setProperty('rate', self.words_per_minute)
+        engine.setProperty('volume', 0.93)
+
+        # Select female voice
+        for voice in engine.getProperty('voices'):
+            if voice and hasattr(voice, 'name'):
+                if 'zira' in voice.name.lower() or 'female' in voice.name.lower():
+                    engine.setProperty('voice', voice.id)
+                    break
+
+        # Generate TTS files
+        wavfiles = []
+        print(f"🎵 Generating TTS for {len(chunks)} chunks at {self.words_per_minute} WPM...")
+
+        for i, chunk in enumerate(chunks, 1):
+            chunk_path = self.temp_path / f"tts_chunk_{i}_{datetime.now().strftime('%H%M%S_%f')}.wav"
+            engine.save_to_file(chunk, str(chunk_path))
+            wavfiles.append(str(chunk_path))
+            temp_manager.register_temp_file(chunk_path)
+
+            if i % 5 == 0 or i == len(chunks):
+                print(f"🎵 Generated {i}/{len(chunks)} chunks...")
+
+        engine.runAndWait()
+
+        # Generate timing
+        timings = []
+        t = 0.0
+        total_audio_duration = 0
+
+        for chunk, wav in zip(chunks, wavfiles):
+            audio_clip = AudioFileClip(str(wav))
+            actual_audio_duration = audio_clip.duration
+            text_duration = actual_audio_duration * self.text_duration_factor
+
+            timings.append({
+                'chunk': chunk,
+                'audio_path': wav,
+                'start': t,
+                'text_duration': text_duration,
+                'audio_duration': actual_audio_duration
+            })
+
+            t += actual_audio_duration + self.text_transition_gap
+            total_audio_duration += actual_audio_duration
+            audio_clip.close()
+
+        print(f"✅ Total narration: {total_audio_duration:.1f}s")
+        return timings
+
+    def create_overlay_clip(self, text, duration, start, color='yellow'):
+        display_text = textwrap.fill(text, width=self.wrap_chars_per_line)
+        adjusted_start = start + self.text_start_delay
+        adjusted_duration = max(0.1, duration)
+
+        tc = TextClip(
+            txt=display_text,
+            fontsize=self.fontsize_sentence,
+            font=self.default_font,
+            color=color,
+            stroke_color='black',
+            stroke_width=5,
+            method='caption',
+            size=(self.textblock_width, None),
+            align='center'
+        ).set_position(('center', 'center')) \
+            .set_start(adjusted_start).set_duration(adjusted_duration)
+        return tc
+
+    def create_single_video_part(self, story_part, part_number, total_parts, story_index, story_title,
+                                 background_videos):
+        """Create single video part with cycling background videos"""
+        print(f"\n🎬 Creating Story {story_index} - Part {part_number}/{total_parts}")
+        print(f"{'=' * 60}")
+
+        # FIXED: Cycle through background videos for each video
+        bg_video = self.cycle_background_video(background_videos)
+
+        print(f"📖 Part {part_number}/{total_parts}: {len(story_part.split())} words")
+
+        chunks = self.split_and_sync_chunks(story_part)
+        overlays_info = self.generate_tts_chunks_and_durations(chunks)
+
+        if not overlays_info:
+            print("❌ No overlays for this part")
+            return None
+
+        # Load background video
+        bg_clip = VideoFileClip(str(bg_video))
+        bg_duration = bg_clip.duration
+
+        # Calculate narration duration
+        total_narration_duration = sum(t['audio_duration'] for t in overlays_info) + (
+                    len(overlays_info) * self.text_transition_gap)
+        print(f"📊 Narration: {total_narration_duration:.1f}s")
+
+        # Loop background if needed
+        if bg_duration < total_narration_duration:
+            print(f"🔄 Looping background to cover {total_narration_duration:.1f}s")
+            bg_clip = bg_clip.loop(duration=total_narration_duration + 10)
+
+        # Resize to vertical format
+        bg_clip = bg_clip.resize(height=1920)
+        if bg_clip.w > 1080:
+            bg_clip = bg_clip.crop(x_center=bg_clip.w / 2, width=1080, height=1920)
+        else:
+            bg_clip = bg_clip.set_position('center').resize(width=1080)
+
+        # Create overlays
+        final_overlays = []
+        audio_files_to_use = []
+
+        # Add part indicator if multi-part
+        if total_parts > 1:
+            part_indicator = f"Part {part_number} of {total_parts}"
+            part_overlay = self.create_overlay_clip(
+                part_indicator,
+                duration=2.0,
+                start=0,
+                color='cyan'
+            )
+            final_overlays.append(part_overlay)
+
+        for i, t in enumerate(overlays_info):
+            audio_files_to_use.append(t['audio_path'])
+
+            # Adjust start time for part indicator
+            start_time = t['start']
+            if total_parts > 1:
+                start_time += 2.5
+
+            print(f"🎯 Chunk {i + 1}: {start_time:.1f}s→{start_time + t['audio_duration']:.1f}s")
+
+            final_overlays.append(self.create_overlay_clip(
+                t['chunk'],
+                duration=t['text_duration'],
+                start=start_time,
+                color='yellow'
+            ))
+
+        # Compose video
+        overlay_audio_clips = [AudioFileClip(f) for f in audio_files_to_use]
+        narration_clip = concatenate_audioclips(overlay_audio_clips)
+
+        # Handle part indicator audio
+        if total_parts > 1:
+            silence_duration = 2.5
+            temp_silence_path = self.temp_path / f"silence_{story_index}_{part_number}_{datetime.now().strftime('%H%M%S_%f')}.wav"
+
+            silence_audio = AudioSegment.silent(duration=int(silence_duration * 1000))
+            silence_audio.export(str(temp_silence_path), format="wav")
+            temp_manager.register_temp_file(temp_silence_path)
+
+            silence_clip = AudioFileClip(str(temp_silence_path))
+            full_audio = concatenate_audioclips([silence_clip, narration_clip])
+            final_duration = full_audio.duration
+        else:
+            full_audio = narration_clip
+            final_duration = narration_clip.duration
+
+        print(f"🎬 FINAL DURATION: {final_duration:.1f}s ({final_duration / 60:.1f}m)")
+
+        # Check if within 2-minute limit
+        if final_duration > self.max_video_duration:
+            print(f"⚠️ Warning: Video {final_duration:.1f}s exceeds {self.max_video_duration}s limit")
+        else:
+            print(f"✅ Video within 2-minute limit")
+
+        all_clips = [bg_clip.set_duration(final_duration)] + final_overlays
+        final = CompositeVideoClip(all_clips).set_audio(full_audio)
+
+        # Generate smart filename
+        smart_filename = self.generate_smart_filename(story_title, story_index, part_number, total_parts)
+        out_fn = self.output_path / f"{smart_filename}.mp4"
+
+        print(f"💾 Exporting: {smart_filename}.mp4")
+
+        final.write_videofile(
+            str(out_fn),
+            fps=30,
+            codec='libx264',
+            audio_codec='aac',
+            bitrate='8000k',
+            verbose=False,
+        )
+
+        # Cleanup
+        try:
+            if total_parts > 1:
+                full_audio.close()
+                silence_clip.close()
+
+            narration_clip.close()
+            for clip in overlay_audio_clips:
+                clip.close()
+                if os.path.exists(clip.filename):
+                    os.remove(clip.filename)
+            bg_clip.close()
+            final.close()
+        except Exception as e:
+            print(f"⚠️ Cleanup warning: {e}")
+
+        print(f"✅ COMPLETED: {smart_filename}.mp4 ({final_duration:.1f}s)")
+        return str(out_fn)
+
+    def create_story_videos(self, story, story_index, background_videos):
+        """Create all video parts for a single story"""
+        print(f"\n🎯 PROCESSING STORY {story_index}")
+        print(f"{'=' * 80}")
+
+        title = story.get('title', '')[:120]
+        score = story.get('score', 0)
+
+        print(f"📖 Story: {title[:50]}... (Score: {score:,})")
+
+        # Split story based on 2-minute limit
+        story_parts = self.split_story_for_2min_limit(story)
+        total_parts = len(story_parts)
+
+        if total_parts > 1:
+            print(f"📺 Creating {total_parts}-part series (2-min limit)")
+        else:
+            print(f"📺 Creating single video")
 
         created_videos = []
 
-        # Determine how many videos to create
-        if self.target_count == 0 or self.target_count is None:
-            # NO LIMIT - create as many as possible
-            max_possible = len(video_pool)
-            print(f"🚀 NO LIMIT mode: Creating up to {max_possible} videos")
-            video_limit = max_possible
-        else:
-            # Limited number
-            video_limit = min(self.target_count, len(video_pool))
-            print(f"🎯 Creating {video_limit} videos")
+        for part_num, story_part in enumerate(story_parts, 1):
+            result = self.create_single_video_part(story_part, part_num, total_parts, story_index, title,
+                                                   background_videos)
+            if result:
+                created_videos.append(result)
+                print(f"✅ Part {part_num}/{total_parts} completed")
+            else:
+                print(f"❌ Part {part_num}/{total_parts} failed")
 
-        for video_num in range(1, video_limit + 1):
-            print(f"\n🎯 Creating mobile short {video_num}/{video_limit} ({self.target_duration / 60:.1f} minutes)...")
-
-            # Randomly select a source video
-            source_video = random.choice(video_pool)
-            video_path = source_video['path']
-            video_duration = source_video['duration']
-
-            print(f"  📹 Selected: {source_video['filename']} ({video_duration:.1f}s)")
-
-            try:
-                # Load the source video
-                clip = self.VideoFileClip(video_path)
-
-                if not self.validate_clip(clip, f"Source video {video_num}"):
-                    clip.close()
-                    continue
-
-                # Preprocess (remove audio, preserve quality)
-                clip = self.preprocess_video(clip)
-
-                # Extract segment based on target duration
-                if video_duration > self.target_duration:
-                    max_start_time = video_duration - self.target_duration
-                    start_time = random.uniform(0, max_start_time)
-                    end_time = start_time + self.target_duration
-
-                    print(f"  ✂️ Extracting: {start_time:.1f}s - {end_time:.1f}s")
-                    segment = clip.subclip(start_time, end_time)
-                else:
-                    print(f"  📏 Using full video duration ({video_duration:.1f}s)")
-                    segment = clip
-
-                if not self.validate_clip(segment, f"Segment {video_num}"):
-                    segment.close()
-                    clip.close()
-                    continue
-
-                # Crop to mobile format (preserving original scale)
-                print(f"  📱 Cropping to mobile format (preserving original scale)...")
-                gc.collect()
-
-                mobile_clip = self.crop_to_mobile_format(segment)
-
-                if mobile_clip is None:
-                    print(f"  ❌ Failed to crop segment {video_num}")
-                    segment.close()
-                    clip.close()
-                    continue
-
-                # Generate UNIQUE filename (NO OVERWRITE)
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                base_filename = f"mobile_short_{video_num:02d}_{timestamp}"
-                output_path = generate_unique_filename(self.output_dir, base_filename, ".mp4")
-                output_filename = os.path.basename(output_path)
-
-                print(f"  💾 Exporting: {output_filename} (MAXIMUM QUALITY, NO AUDIO, NO OVERWRITE)")
-
-                # Use original FPS and high quality settings
-                mobile_clip.write_videofile(
-                    str(output_path),
-                    fps=mobile_clip.fps,  # PRESERVE ORIGINAL FPS
-                    codec='libx264',
-                    bitrate='15000k',  # HIGH BITRATE for quality
-                    verbose=False,
-                    logger=None,
-                    audio=False,
-                    preset='slow',  # Slower encoding for better quality
-                    ffmpeg_params=['-crf', '18']  # High quality CRF setting
-                )
-
-                created_videos.append(str(output_path))
-                file_size = os.path.getsize(output_path) / (1024 * 1024)
-                print(f"  ✅ Created: {output_filename} ({file_size:.1f} MB)")
-
-                # Cleanup
-                mobile_clip.close()
-                segment.close()
-                clip.close()
-
-            except Exception as e:
-                print(f"  ❌ Error creating video {video_num}: {e}")
-                continue
-
+        print(f"🎉 Story {story_index} complete: {len(created_videos)}/{total_parts} parts")
         return created_videos
+
+    def create_limited_videos(self):
+        """Create videos with strict limits: 3 stories max, 2-min videos, cycling backgrounds"""
+        print(f"\n🚀 CREATING LIMITED VIDEOS FOR TESTING")
+        print(f"📚 Max stories: {self.max_stories_total}")
+        print(f"📺 Max videos per story: {self.max_videos_per_story}")
+        print(f"⏰ Max video duration: {self.max_video_duration}s (2 min)")
+        print(f"🎮 Background cycling: ENABLED")
+        print(f"{'=' * 80}")
+
+        stories = self.load_stories()
+        if not stories:
+            print("❌ No stories loaded!")
+            return
+
+        background_videos = self.get_background_videos()
+
+        # STRICT LIMIT: Only 3 stories total
+        num_stories = min(len(stories), self.max_stories_total)
+        selected_stories = stories[:num_stories]
+
+        print(f"📝 Processing EXACTLY {num_stories} stories (max: {self.max_stories_total})")
+        print(f"🎮 Will cycle through {len(background_videos)} background videos")
+
+        # Show selected stories
+        print(f"\n📋 Selected stories:")
+        for i, story in enumerate(selected_stories, 1):
+            title = story.get('title', 'Unknown')[:60]
+            score = story.get('score', 0)
+            print(f"   {i}. {title}... (Score: {score:,})")
+
+        all_videos = []
+        start_time = datetime.now()
+
+        # Process each story sequentially
+        for idx, story in enumerate(selected_stories, start=1):
+            story_videos = self.create_story_videos(story, idx, background_videos)
+            all_videos.extend(story_videos)
+
+        end_time = datetime.now()
+        creation_time = (end_time - start_time).total_seconds()
+
+        # Cleanup
+        temp_manager.cleanup_all()
+
+        # Final summary
+        print(f"\n🎉 LIMITED VIDEO CREATION COMPLETE!")
+        print(f"{'=' * 80}")
+        print(f"📁 Videos: {self.output_path}")
+        print(f"⏱️  Time: {creation_time:.1f}s ({creation_time / 60:.1f}m)")
+        print(f"📚 Stories processed: {len(selected_stories)}/{self.max_stories_total}")
+        print(f"🎥 Total videos created: {len(all_videos)}")
+
+        if all_videos:
+            total_duration = 0
+            for video_path in all_videos:
+                try:
+                    video_clip = VideoFileClip(video_path)
+                    total_duration += video_clip.duration
+                    video_clip.close()
+                except:
+                    pass
+
+            avg_duration = total_duration / len(all_videos)
+            print(f"📊 Avg video duration: {avg_duration:.1f}s ({avg_duration / 60:.1f}m)")
+
+            print(f"\n📁 Created videos:")
+            for video in all_videos:
+                try:
+                    size = Path(video).stat().st_size / (1024 * 1024)
+                    duration_info = ""
+                    try:
+                        clip = VideoFileClip(video)
+                        duration_info = f" - {clip.duration:.1f}s"
+                        clip.close()
+                    except:
+                        pass
+                    print(f"   • {Path(video).name} ({size:.1f} MB{duration_info})")
+                except:
+                    print(f"   • {Path(video).name}")
+
+        print(f"\n💡 FIXED Features:")
+        print(f"   • ✅ STRICT LIMITS: {self.max_stories_total} stories max")
+        print(f"   • ✅ 2-minute video limit with auto-splitting")
+        print(f"   • ✅ Background video cycling (uses ALL videos)")
+        print(f"   • ✅ {self.words_per_minute} WPM fast speech")
+        print(f"   • ✅ NO threading (reliable completion)")
+        print(f"   • ✅ Smart filenames with keywords")
+        print(f"   • ✅ Perfect for testing setup")
 
 
 def main():
-    """Main function for mobile YouTube Shorts creation"""
-    print("📱 Mobile YouTube Shorts Processor - NO OVERWRITE VERSION")
-    print("=" * 70)
-
     try:
-        if not os.path.exists(INPUT_DIR):
-            print(f"❌ Input directory not found: {INPUT_DIR}")
-            print(f"💡 Please update INPUT_DIR at the top of the script")
-            return
-
-        # Check existing files in output directory
-        existing_files = list(Path(OUTPUT_DIR).glob("*.mp4")) if Path(OUTPUT_DIR).exists() else []
-        if existing_files:
-            print(f"📋 Found {len(existing_files)} existing files in output directory:")
-            for existing_file in existing_files[:5]:  # Show first 5
-                print(f"  - {existing_file.name}")
-            if len(existing_files) > 5:
-                print(f"  ... and {len(existing_files) - 5} more")
-            print(f"🛡️ Don't worry - new files will have unique names (no overwrite)")
-
-        # Initialize processor with configurations from top
-        print("\n🚀 Initializing Mobile YouTube Shorts Processor...")
-
-        target_duration_seconds = VIDEO_DURATION_MINUTES * 60
-        processor = MobileYoutubeShortsProcessor(
-            INPUT_DIR,
-            OUTPUT_DIR,
-            target_count=NUMBER_OF_VIDEOS,  # 0 or None for no limit
-            target_duration=target_duration_seconds
+        creator = FixedSequentialRedditVideoCreator(
+            stories_file="viral_stories_full.yaml",
+            background_videos_path="processed_backgrounds/",
+            output_path="reddit_shorts/"
         )
 
-        # Create mobile shorts
-        if NUMBER_OF_VIDEOS == 0 or NUMBER_OF_VIDEOS is None:
-            print(f"\n🚀 Creating mobile YouTube Shorts (NO LIMIT)...")
-        else:
-            print(f"\n🎯 Creating {NUMBER_OF_VIDEOS} mobile YouTube Shorts...")
+        # Create limited videos for testing
+        creator.create_limited_videos()
 
-        created_videos = processor.create_mobile_shorts()
-
-        # Results
-        print(f"\n🎉 Processing complete!")
-        print(f"📁 Created {len(created_videos)} mobile shorts in '{OUTPUT_DIR}/'")
-
-        if created_videos:
-            print("\n📋 Created mobile YouTube Shorts (NO OVERWRITE):")
-            total_size = 0
-
-            for i, video_path in enumerate(created_videos, 1):
-                filename = os.path.basename(video_path)
-                file_size = os.path.getsize(video_path) / (1024 * 1024)
-                total_size += file_size
-                duration_min = VIDEO_DURATION_MINUTES
-                print(f"  {i}. {filename} ({file_size:.1f} MB, {duration_min} min)")
-
-            print(f"\n📊 Total output: {total_size:.1f} MB")
-            print(f"\n✅ Ready for mobile YouTube Shorts!")
-            print(f"\n📱 Mobile YouTube Shorts features:")
-            print("  • ORIGINAL SCALE PRESERVED - no quality loss from resizing")
-            print("  • Perfect 9:16 aspect ratio for mobile viewing")
-            print(f"  • Each video is exactly {VIDEO_DURATION_MINUTES} minutes")
-            print("  • NO AUDIO - ready for custom background music")
-            print("  • Maximum quality encoding (CRF 18, 15Mbps bitrate)")
-            print("  • Cropped (not resized) to maintain sharpness")
-            print("  • 🛡️ NO OVERWRITE - existing files are safe!")
-
-            if NUMBER_OF_VIDEOS == 0 or NUMBER_OF_VIDEOS is None:
-                print("  • NO LIMIT mode - created as many videos as possible")
-
+    except KeyboardInterrupt:
+        print("\n⚠️ Interrupted by user")
+        temp_manager.cleanup_all()
     except Exception as e:
-        print(f"\n❌ Critical error: {e}")
+        print(f"\n💥 Error: {e}")
+        temp_manager.cleanup_all()
+        import traceback
+        traceback.print_exc()
 
 
 if __name__ == "__main__":
