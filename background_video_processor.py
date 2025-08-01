@@ -1,28 +1,40 @@
 """
-background_video_processor_final_fix.py
-COMPREHENSIVE FIX for PIL.Image ANTIALIAS error + background video processing
+mobile_youtube_shorts_processor.py
+
+MOBILE YOUTUBE SHORTS VERSION - Preserves original scale and quality
+Creates videos for mobile YouTube Shorts without audio
+CROPS to mobile format instead of resizing to maintain original quality
 
 Dependencies:
-    pip install moviepy==1.0.3 opencv-python pillow pyyaml
+pip install moviepy==1.0.3 opencv-python pillow pyyaml
 
-OR if you prefer PIL solution:
-    pip install moviepy==1.0.3 pillow==9.5.0 pyyaml
 """
 
+# ===============================================
+# CONFIGURATION - EASY TO MODIFY
+# ===============================================
+INPUT_DIR = r"E:\nVidiaShadowPlay\for_reddit\others"
+OUTPUT_DIR = "processed_backgrounds"
+# NUMBER_OF_VIDEOS = 8  # Set to 0 or None for NO LIMIT (creates as many as possible)
+NUMBER_OF_VIDEOS = 0  # Set to 0 or None for NO LIMIT (creates as many as possible)
+VIDEO_DURATION_MINUTES = 3  # Duration per video in minutes
+# ===============================================
+
 import os
+import glob
 import random
+import gc
 from pathlib import Path
 from datetime import datetime
 
 # ===============================================
-# PIL COMPATIBILITY FIX (Multiple Solutions)
+# PIL COMPATIBILITY FIX
 # ===============================================
 
 def fix_pil_antialias_compatibility():
     """Apply PIL.Image.ANTIALIAS compatibility fix for Pillow 10.0.0+"""
     try:
         import PIL.Image
-        # Check if ANTIALIAS exists
         if not hasattr(PIL.Image, 'ANTIALIAS'):
             print("🔧 Applying PIL.Image.ANTIALIAS compatibility fix...")
             PIL.Image.ANTIALIAS = PIL.Image.LANCZOS
@@ -40,17 +52,14 @@ def check_opencv_availability():
         return True
     except ImportError:
         print("⚠️ OpenCV not available - MoviePy will use PIL")
-        print("   Install with: pip install opencv-python")
+        print("  Install with: pip install opencv-python")
         return False
 
 def setup_moviepy_dependencies():
     """Setup and check all MoviePy dependencies"""
     print("🔍 Checking MoviePy dependencies...")
-
-    # Check OpenCV first (preferred by MoviePy)
     opencv_available = check_opencv_availability()
 
-    # Apply PIL fix if needed
     if not opencv_available:
         fix_pil_antialias_compatibility()
 
@@ -63,284 +72,362 @@ def setup_moviepy_dependencies():
         return False
 
 # ===============================================
-# BACKGROUND VIDEO PROCESSOR - FIXED VERSION
+# MOBILE YOUTUBE SHORTS PROCESSOR
 # ===============================================
 
-class BackgroundVideoProcessorFixed:
-    def __init__(self, input_video_path, output_dir="processed_backgrounds"):
-        """Initialize with comprehensive error handling and dependency checks"""
+class MobileYoutubeShortsProcessor:
+    def __init__(self, input_dir, output_dir, target_count=8, target_duration=180):
+        """Initialize for mobile YouTube Shorts with configurable settings"""
 
-        # Setup dependencies first
         if not setup_moviepy_dependencies():
             raise RuntimeError("MoviePy dependencies not properly configured")
 
-        # Import MoviePy after dependency check
-        from moviepy.editor import VideoFileClip
+        from moviepy.editor import VideoFileClip, concatenate_videoclips
         self.VideoFileClip = VideoFileClip
+        self.concatenate_videoclips = concatenate_videoclips
 
-        self.input_path = Path(input_video_path)
+        self.input_dir = Path(input_dir)
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(exist_ok=True)
 
-        print(f"📹 Input video: {self.input_path}")
+        # Mobile YouTube Shorts specifications
+        self.target_duration = target_duration  # Duration in seconds
+        self.mobile_aspect_ratio = 9/16  # Mobile vertical ratio
+        self.target_count = target_count  # Number of videos (0 or None for no limit)
+
+        print(f"📹 Input directory: {self.input_dir}")
         print(f"📁 Output directory: {self.output_dir}")
 
-    def check_video_integrity(self):
-        """Comprehensive video file integrity check"""
+        if self.target_count == 0 or self.target_count is None:
+            print(f"🎯 Target: NO LIMIT - create as many videos as possible")
+            print(f"⏱️ Duration: {self.target_duration/60:.1f} minutes each")
+        else:
+            print(f"🎯 Target: {self.target_count} videos of {self.target_duration/60:.1f} minutes each")
+
+        print(f"📱 Format: Mobile YouTube Shorts (9:16 aspect ratio)")
+        print(f"⭐ Quality: ORIGINAL SCALE PRESERVED (crop only, no resize)")
+        print(f"🔇 Audio: DISABLED")
+
+    def validate_clip(self, clip, operation_name="operation"):
+        """Validate clip before operations"""
+        if clip is None:
+            print(f"❌ {operation_name}: Clip is None")
+            return False
+
         try:
-            if not self.input_path.exists():
-                print(f"❌ Video file not found: {self.input_path}")
+            duration = clip.duration
+            if duration <= 0:
+                print(f"❌ {operation_name}: Invalid duration {duration}")
                 return False
 
-            # Check file size
-            file_size = self.input_path.stat().st_size
-            size_mb = file_size / (1024 * 1024)
-
-            print(f"📊 File size: {size_mb:.2f} MB")
-
-            if file_size < 1024 * 1024:  # Less than 1MB
-                print(f"⚠️ Video file seems too small: {size_mb:.2f} MB")
-                print("This might indicate a corrupted or incomplete file.")
+            test_frame = clip.get_frame(0)
+            if test_frame is None:
+                print(f"❌ {operation_name}: Cannot access frames")
                 return False
 
             return True
-
         except Exception as e:
-            print(f"❌ Error checking video integrity: {e}")
+            print(f"❌ {operation_name}: Clip validation failed - {e}")
             return False
 
-    def analyze_video(self):
-        """Analyze video with enhanced error handling"""
-        if not self.check_video_integrity():
-            return None
+    def get_video_files(self):
+        """Get all video files from the input directory"""
+        video_extensions = ['*.mp4', '*.avi', '*.mov', '*.mkv', '*.wmv', '*.flv', '*.webm']
+        video_files = []
 
+        for extension in video_extensions:
+            pattern = self.input_dir / extension
+            video_files.extend(glob.glob(str(pattern)))
+
+        video_files.sort(key=lambda x: os.path.getctime(x))
+
+        print(f"📁 Found {len(video_files)} video files:")
+        for i, file in enumerate(video_files):
+            filename = os.path.basename(file)
+            file_size = os.path.getsize(file) / (1024 * 1024)
+            print(f"  {i+1}. {filename} ({file_size:.1f} MB)")
+
+        return video_files
+
+    def analyze_video_duration(self, video_path):
+        """Analyze video duration and return in seconds"""
         try:
-            print("🔍 Loading video for analysis...")
-            clip = self.VideoFileClip(str(self.input_path))
+            clip = self.VideoFileClip(video_path)
+            duration = clip.duration
+            clip.close()
+            return duration
+        except Exception as e:
+            print(f"❌ Error analyzing {video_path}: {e}")
+            return 0
 
-            # Check duration
-            if clip.duration < 1.0:
-                print(f"⚠️ WARNING: Video duration is very short ({clip.duration:.2f} seconds)")
-                print("This usually indicates a corrupted or incomplete video file.")
-                clip.close()
+    def preprocess_video(self, clip):
+        """Preprocess video - PRESERVE ORIGINAL QUALITY"""
+        try:
+            print("  🔧 Preprocessing (preserving original quality)...")
+
+            # Remove audio only
+            if hasattr(clip, 'audio') and clip.audio:
+                clip = clip.without_audio()
+
+            # PRESERVE ORIGINAL FPS - don't change it
+            print(f"  📊 Keeping original FPS: {clip.fps}")
+
+            return clip
+
+        except Exception as e:
+            print(f"  ⚠️ Preprocessing failed: {e}")
+            return clip
+
+    def crop_to_mobile_format(self, clip):
+        """Crop to mobile format preserving ORIGINAL SCALE and quality"""
+        try:
+            if not self.validate_clip(clip, "Mobile crop input"):
                 return None
 
-            print(f"\n📊 Video Analysis:")
-            print(f"   Duration: {clip.duration:.1f} seconds ({clip.duration/60:.1f} minutes)")
-            print(f"   Resolution: {clip.w}x{clip.h}")
-            print(f"   FPS: {clip.fps}")
-            print(f"   Aspect ratio: {clip.w/clip.h:.2f}:1")
+            original_w = clip.w
+            original_h = clip.h
+            original_ratio = original_w / original_h
+            target_ratio = self.mobile_aspect_ratio  # 9:16 = 0.5625
 
-            # Calculate segments
-            segments = int(clip.duration // 45)  # 45-second segments
-            print(f"   Can create ~{segments} background segments (45s each)")
+            print(f"  📊 Original: {original_w}x{original_h} (ratio: {original_ratio:.3f})")
+            print(f"  🎯 Target ratio: {target_ratio:.3f} (9:16 mobile)")
 
-            video_info = {
-                'duration': clip.duration,
-                'width': clip.w,
-                'height': clip.h,
-                'fps': clip.fps,
-                'segments': segments
-            }
+            # Remove audio if present
+            if hasattr(clip, 'audio') and clip.audio:
+                working_clip = clip.without_audio()
+            else:
+                working_clip = clip.copy()
 
-            clip.close()
-            return video_info
+            if not self.validate_clip(working_clip, "Working clip"):
+                return None
 
-        except Exception as e:
-            print(f"❌ Error analyzing video: {e}")
-            print("\n🔧 This might be due to:")
-            print("1. Corrupted video file")
-            print("2. Unsupported video format")
-            print("3. MoviePy/PIL compatibility issues")
-            print("4. Missing video codecs")
-            return None
+            if original_ratio > target_ratio:
+                # Video is wider than target - crop width (keep full height)
+                new_width = int(original_h * target_ratio)
+                x_center = original_w / 2
 
-    def convert_to_vertical(self, clip, segment_number):
-        """Convert clip to vertical format with enhanced error handling"""
-        try:
-            target_width = 1080
-            target_height = 1920
+                print(f"  ✂️ Cropping width: {original_w} → {new_width} (preserving height {original_h})")
 
-            print(f"   🔄 Converting to vertical format ({target_width}x{target_height})...")
-
-            # Resize to fit height first
-            resized_clip = clip.resize(height=target_height)
-
-            # Crop width if needed
-            if resized_clip.w > target_width:
-                x_center = resized_clip.w / 2
-                cropped_clip = resized_clip.crop(
+                cropped_clip = working_clip.crop(
                     x_center=x_center,
-                    width=target_width,
-                    height=target_height
+                    width=new_width,
+                    height=original_h
                 )
             else:
-                # If width is smaller, resize to fit width and crop height
-                resized_clip = clip.resize(width=target_width)
-                if resized_clip.h > target_height:
-                    y_center = resized_clip.h / 2
-                    cropped_clip = resized_clip.crop(
-                        y_center=y_center,
-                        width=target_width,
-                        height=target_height
-                    )
-                else:
-                    cropped_clip = resized_clip.resize((target_width, target_height))
+                # Video is taller than target - crop height (keep full width)
+                new_height = int(original_w / target_ratio)
+                y_center = original_h / 2
 
-            # Generate output filename
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            output_filename = f"bg_vertical_{segment_number:02d}_{timestamp}.mp4"
-            output_path = self.output_dir / output_filename
+                print(f"  ✂️ Cropping height: {original_h} → {new_height} (preserving width {original_w})")
 
-            print(f"   💾 Exporting: {output_filename}")
+                cropped_clip = working_clip.crop(
+                    y_center=y_center,
+                    width=original_w,
+                    height=new_height
+                )
 
-            # Export with optimized settings
-            cropped_clip.write_videofile(
-                str(output_path),
-                fps=30,
-                codec='libx264',
-                bitrate='6000k',
-                verbose=False,
-                logger=None,
-                audio=False  # Remove audio for background videos
-            )
+            working_clip.close()
 
-            # Cleanup
-            resized_clip.close()
-            cropped_clip.close()
+            if not self.validate_clip(cropped_clip, "Final cropped clip"):
+                cropped_clip.close()
+                return None
 
-            return str(output_path)
+            final_w = cropped_clip.w
+            final_h = cropped_clip.h
+            final_ratio = final_w / final_h
+
+            print(f"  ✅ Final: {final_w}x{final_h} (ratio: {final_ratio:.3f}) - ORIGINAL SCALE PRESERVED")
+
+            return cropped_clip
 
         except Exception as e:
-            print(f"   ❌ Error converting segment: {e}")
-            print(f"   This was likely the PIL.Image.ANTIALIAS error!")
-            print(f"   💡 Solution: pip install opencv-python")
+            print(f"  ❌ Error in mobile crop: {e}")
             return None
 
-    def create_vertical_backgrounds(self, segment_duration=45, num_segments=3):
-        """Create vertical background segments with comprehensive error handling"""
-        try:
-            print(f"\n🎬 Creating {num_segments} vertical background segments...")
+    def create_mobile_shorts(self):
+        """Create mobile YouTube Shorts preserving original quality"""
+        video_files = self.get_video_files()
 
-            # Load source video
-            print("📹 Loading source video...")
-            source_clip = self.VideoFileClip(str(self.input_path))
-
-            # Adjust parameters based on video length
-            if source_clip.duration < segment_duration:
-                print(f"⚠️ Video too short ({source_clip.duration:.1f}s) for {segment_duration}s segments")
-                segment_duration = max(30, source_clip.duration * 0.8)
-                print(f"📝 Adjusted segment duration to {segment_duration:.1f}s")
-
-            if source_clip.duration < segment_duration * num_segments:
-                max_segments = int(source_clip.duration // segment_duration)
-                num_segments = max(1, max_segments)
-                print(f"📝 Adjusted number of segments to {num_segments}")
-
-            created_files = []
-
-            for i in range(num_segments):
-                print(f"\n📹 Processing segment {i+1}/{num_segments}...")
-
-                # Calculate random start time
-                max_start_time = max(0, source_clip.duration - segment_duration)
-                start_time = random.uniform(0, max_start_time) if max_start_time > 0 else 0
-
-                print(f"   ⏰ Using segment: {start_time:.1f}s - {start_time + segment_duration:.1f}s")
-
-                # Extract segment
-                try:
-                    segment = source_clip.subclip(start_time, start_time + segment_duration)
-                except Exception as e:
-                    print(f"   ❌ Error extracting segment: {e}")
-                    continue
-
-                # Convert to vertical
-                vertical_segment = self.convert_to_vertical(segment, i+1)
-
-                if vertical_segment:
-                    created_files.append(vertical_segment)
-                    print(f"   ✅ Successfully created: {Path(vertical_segment).name}")
-                else:
-                    print(f"   ❌ Failed to create segment {i+1}")
-
-                # Close segment to free memory
-                segment.close()
-
-            source_clip.close()
-            return created_files
-
-        except Exception as e:
-            print(f"❌ Error creating backgrounds: {e}")
+        if not video_files:
+            print("❌ No video files found in the directory")
             return []
 
-def main():
-    """Main function with comprehensive error handling and solutions"""
+        print(f"\n🎬 Analyzing video durations...")
 
-    print("🎮 Background Video Processor - COMPREHENSIVE FIX VERSION")
+        video_pool = []
+        total_duration = 0
+
+        for video_file in video_files:
+            duration = self.analyze_video_duration(video_file)
+            if duration > 10:
+                video_pool.append({
+                    'path': video_file,
+                    'duration': duration,
+                    'filename': os.path.basename(video_file)
+                })
+                total_duration += duration
+                print(f"  📹 {os.path.basename(video_file)}: {duration:.1f}s ({duration/60:.1f}m)")
+
+        print(f"\n📊 Total available content: {total_duration:.1f}s ({total_duration/60:.1f}m)")
+
+        created_videos = []
+
+        # Determine how many videos to create
+        if self.target_count == 0 or self.target_count is None:
+            # NO LIMIT - create as many as possible
+            max_possible = len(video_pool)
+            print(f"🚀 NO LIMIT mode: Creating up to {max_possible} videos")
+            video_limit = max_possible
+        else:
+            # Limited number
+            video_limit = min(self.target_count, len(video_pool))
+            print(f"🎯 Creating {video_limit} videos")
+
+        for video_num in range(1, video_limit + 1):
+            print(f"\n🎯 Creating mobile short {video_num}/{video_limit} ({self.target_duration/60:.1f} minutes)...")
+
+            # Randomly select a source video
+            source_video = random.choice(video_pool)
+            video_path = source_video['path']
+            video_duration = source_video['duration']
+
+            print(f"  📹 Selected: {source_video['filename']} ({video_duration:.1f}s)")
+
+            try:
+                # Load the source video
+                clip = self.VideoFileClip(video_path)
+
+                if not self.validate_clip(clip, f"Source video {video_num}"):
+                    clip.close()
+                    continue
+
+                # Preprocess (remove audio, preserve quality)
+                clip = self.preprocess_video(clip)
+
+                # Extract segment based on target duration
+                if video_duration > self.target_duration:
+                    max_start_time = video_duration - self.target_duration
+                    start_time = random.uniform(0, max_start_time)
+                    end_time = start_time + self.target_duration
+
+                    print(f"  ✂️ Extracting: {start_time:.1f}s - {end_time:.1f}s")
+                    segment = clip.subclip(start_time, end_time)
+                else:
+                    print(f"  📏 Using full video duration ({video_duration:.1f}s)")
+                    segment = clip
+
+                if not self.validate_clip(segment, f"Segment {video_num}"):
+                    segment.close()
+                    clip.close()
+                    continue
+
+                # Crop to mobile format (preserving original scale)
+                print(f"  📱 Cropping to mobile format (preserving original scale)...")
+                gc.collect()
+
+                mobile_clip = self.crop_to_mobile_format(segment)
+
+                if mobile_clip is None:
+                    print(f"  ❌ Failed to crop segment {video_num}")
+                    segment.close()
+                    clip.close()
+                    continue
+
+                # Export with MAXIMUM QUALITY settings
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                output_filename = f"mobile_short_{video_num:02d}_{timestamp}.mp4"
+                output_path = self.output_dir / output_filename
+
+                print(f"  💾 Exporting: {output_filename} (MAXIMUM QUALITY, NO AUDIO)")
+
+                # Use original FPS and high quality settings
+                mobile_clip.write_videofile(
+                    str(output_path),
+                    fps=mobile_clip.fps,  # PRESERVE ORIGINAL FPS
+                    codec='libx264',
+                    bitrate='15000k',     # HIGH BITRATE for quality
+                    verbose=False,
+                    logger=None,
+                    audio=False,
+                    preset='slow',        # Slower encoding for better quality
+                    ffmpeg_params=['-crf', '18']  # High quality CRF setting
+                )
+
+                created_videos.append(str(output_path))
+                file_size = os.path.getsize(output_path) / (1024 * 1024)
+                print(f"  ✅ Created: {output_filename} ({file_size:.1f} MB)")
+
+                # Cleanup
+                mobile_clip.close()
+                segment.close()
+                clip.close()
+
+            except Exception as e:
+                print(f"  ❌ Error creating video {video_num}: {e}")
+                continue
+
+        return created_videos
+
+def main():
+    """Main function for mobile YouTube Shorts creation"""
+    print("📱 Mobile YouTube Shorts Processor - CONFIGURABLE VERSION")
     print("=" * 65)
 
-    # Configuration
-    INPUT_VIDEO = r"d:\witcher.mp4"  # Fixed path format
-    OUTPUT_DIR = "processed_backgrounds"
-
     try:
-        # Initialize processor
-        print("🚀 Initializing processor...")
-        processor = BackgroundVideoProcessorFixed(INPUT_VIDEO, OUTPUT_DIR)
-
-        # Analyze video
-        video_info = processor.analyze_video()
-        if not video_info:
-            print("\n❌ Cannot process video. Troubleshooting steps:")
-            print("\n🔧 SOLUTION 1 (RECOMMENDED): Install OpenCV")
-            print("   pip install opencv-python")
-            print("   This bypasses the PIL.Image.ANTIALIAS issue entirely!")
-
-            print("\n🔧 SOLUTION 2: Downgrade Pillow")
-            print("   pip uninstall pillow")
-            print("   pip install pillow==9.5.0")
-
-            print("\n🔧 SOLUTION 3: Complete reinstall")
-            print("   pip install moviepy==1.0.3 opencv-python pillow pyyaml")
-
+        if not os.path.exists(INPUT_DIR):
+            print(f"❌ Input directory not found: {INPUT_DIR}")
+            print(f"💡 Please update INPUT_DIR at the top of the script")
             return
 
-        # Create backgrounds
-        print("\n🎯 Creating vertical background segments...")
-        segments = processor.create_vertical_backgrounds(
-            segment_duration=45,
-            num_segments=3
+        # Initialize processor with configurations from top
+        print("🚀 Initializing Mobile YouTube Shorts Processor...")
+
+        target_duration_seconds = VIDEO_DURATION_MINUTES * 60
+        processor = MobileYoutubeShortsProcessor(
+            INPUT_DIR,
+            OUTPUT_DIR,
+            target_count=NUMBER_OF_VIDEOS,  # 0 or None for no limit
+            target_duration=target_duration_seconds
         )
+
+        # Create mobile shorts
+        if NUMBER_OF_VIDEOS == 0 or NUMBER_OF_VIDEOS is None:
+            print(f"\n🚀 Creating mobile YouTube Shorts (NO LIMIT)...")
+        else:
+            print(f"\n🎯 Creating {NUMBER_OF_VIDEOS} mobile YouTube Shorts...")
+
+        created_videos = processor.create_mobile_shorts()
 
         # Results
         print(f"\n🎉 Processing complete!")
-        print(f"📁 Created {len(segments)} background videos in '{OUTPUT_DIR}/'")
+        print(f"📁 Created {len(created_videos)} mobile shorts in '{OUTPUT_DIR}/'")
 
-        if segments:
-            print("\n📋 Created files:")
-            for i, file_path in enumerate(segments, 1):
-                filename = os.path.basename(file_path)
-                file_size = os.path.getsize(file_path) / (1024 * 1024)
-                print(f"   {i}. {filename} ({file_size:.1f} MB)")
+        if created_videos:
+            print("\n📋 Created mobile YouTube Shorts:")
+            total_size = 0
 
-            print(f"\n✅ Success! Ready for your Reddit video creator!")
-            print(f"   Update your main script:")
-            print(f"   BACKGROUND_VIDEO_PATH = \"{OUTPUT_DIR}/\"")
+            for i, video_path in enumerate(created_videos, 1):
+                filename = os.path.basename(video_path)
+                file_size = os.path.getsize(video_path) / (1024 * 1024)
+                total_size += file_size
+                duration_min = VIDEO_DURATION_MINUTES
+                print(f"  {i}. {filename} ({file_size:.1f} MB, {duration_min} min)")
 
-        else:
-            print("\n❌ No videos were created.")
-            print("\n🚨 MOST LIKELY CAUSE: PIL.Image.ANTIALIAS Error")
-            print("\n💡 QUICK FIX:")
-            print("   pip install opencv-python")
-            print("   Then run this script again!")
+            print(f"\n📊 Total output: {total_size:.1f} MB")
+            print(f"\n✅ Ready for mobile YouTube Shorts!")
+            print(f"\n📱 Mobile YouTube Shorts features:")
+            print("  • ORIGINAL SCALE PRESERVED - no quality loss from resizing")
+            print("  • Perfect 9:16 aspect ratio for mobile viewing")
+            print(f"  • Each video is exactly {VIDEO_DURATION_MINUTES} minutes")
+            print("  • NO AUDIO - ready for custom background music")
+            print("  • Maximum quality encoding (CRF 18, 15Mbps bitrate)")
+            print("  • Cropped (not resized) to maintain sharpness")
+
+            if NUMBER_OF_VIDEOS == 0 or NUMBER_OF_VIDEOS is None:
+                print("  • NO LIMIT mode - created as many videos as possible")
 
     except Exception as e:
         print(f"\n❌ Critical error: {e}")
-        print("\n🔧 Try these solutions:")
-        print("1. pip install opencv-python")
-        print("2. pip install pillow==9.5.0")
-        print("3. Check if your video file is corrupted")
 
 if __name__ == "__main__":
     main()
