@@ -13,14 +13,45 @@ from moviepy.config import change_settings
 from pydub import AudioSegment
 import shutil
 import atexit
+import glob
 
-# ----------- 1. IMAGEMAGICK DYNAMIC PATH CHECK ------------
-IMAGEMAGICK_PATH = r"C:\Program Files\ImageMagick-7.1.2-Q16-HDRI\magick.exe"
-if not os.path.exists(IMAGEMAGICK_PATH):
-    print(f"❌ ImageMagick not found at: {IMAGEMAGICK_PATH}")
-    raise SystemExit("Please verify and correct the ImageMagick path at the top of the script.")
-change_settings({"IMAGEMAGICK_BINARY": IMAGEMAGICK_PATH})
+
+# ----------- 1. DYNAMIC IMAGEMAGICK PATH DETECTION ------------
+def find_imagemagick_path():
+    """Dynamically find ImageMagick installation"""
+    search_patterns = [
+        r"C:\Program Files\ImageMagick*\magick.exe",
+        r"C:\Program Files (x86)\ImageMagick*\magick.exe",
+        r"C:\ImageMagick*\magick.exe",
+    ]
+
+    print("🔍 Searching for ImageMagick...")
+
+    # Search in common directories
+    for pattern in search_patterns:
+        matches = glob.glob(pattern)
+        if matches:
+            found_path = matches[0]
+            print(f"📍 Found ImageMagick: {found_path}")
+            return found_path
+
+    # Try system PATH
+    path_magick = shutil.which("magick")
+    if path_magick:
+        print(f"📍 Found ImageMagick in PATH: {path_magick}")
+        return path_magick
+
+    return None
+
+
+IMAGEMAGICK_PATH = find_imagemagick_path()
+
+if not IMAGEMAGICK_PATH:
+    print("❌ ImageMagick not found!")
+    raise SystemExit("Please install ImageMagick or add to PATH")
+
 print(f"✅ Using ImageMagick at: {IMAGEMAGICK_PATH}")
+change_settings({"IMAGEMAGICK_BINARY": IMAGEMAGICK_PATH})
 
 
 # ----------- 2. NLTK Punkt Tab Fix -------------
@@ -80,11 +111,15 @@ temp_manager = TempFileManager()
 
 class FixedSequentialRedditVideoCreator:
     def __init__(self, stories_file="viral_stories_full.yaml",
-                 background_videos_path="processed_backgrounds/",
+                 background_videos_path="processed_backgrounds/batch_20250802_030654",
                  output_path="reddit_shorts/"):
         self.stories_file = Path(stories_file)
         self.background_path = Path(background_videos_path)
-        self.output_path = Path(output_path)
+
+        # ========== DATE-WISE FOLDER CREATION ==========
+        # Create readable date-wise output folder
+        today = datetime.now().strftime("%Y-%m-%d_%H-%M")
+        self.output_path = Path(output_path) / f"batch_{today}"
         self.temp_path = Path("temp_sequential")
 
         # Create directories
@@ -92,20 +127,32 @@ class FixedSequentialRedditVideoCreator:
         self.temp_path.mkdir(exist_ok=True, parents=True)
         temp_manager.register_temp_folder(self.temp_path)
 
-        # Video settings - FIXED FOR YOUR REQUIREMENTS
-        self.fontsize_sentence = 90
-        self.textblock_width = 850
-        self.text_start_delay = 0.0
-        self.text_duration_factor = 1.0
-        self.text_transition_gap = 0.15
-        self.wrap_chars_per_line = 22
-        self.words_per_minute = 230  # Fast speech
-        self.default_font = "Arial-Bold"
+        print(f"📁 Date-wise output folder: {self.output_path}")
 
-        # STRICT LIMITS - EXACTLY WHAT YOU ASKED FOR
-        self.max_stories_total = 3  # Total 3 stories max
-        self.max_videos_per_story = 3  # Max 3 videos per story
-        self.max_video_duration = 120  # 2 minutes max per video (120 seconds)
+        # ========== TEXT & FONT CONFIGURATION ==========
+        self.fontsize_sentence = 100  # Large and readable
+        self.text_stroke_width = 2  # Clean, minimal outline for contrast without overpowering
+        self.text_color = 'white'  # Best overall readability
+        self.text_stroke_color = 'black'
+        self.default_font = "Anton"  # Tall & bold
+        self.textblock_width = 880
+        self.wrap_chars_per_line = 20
+
+        # ========== TIMING CONFIGURATION ==========
+        self.text_start_delay = -0.15  # Delay before text appears
+        self.text_duration_factor = 1.0  # Text display duration multiplier
+        self.text_transition_gap = 0.15  # Gap between text chunks
+        self.words_per_minute = 230  # TTS speech speed
+
+        # ========== PART INDICATOR CONFIGURATION ==========
+        self.part_indicator_color = 'cyan'  # Color for "Part X of Y" text
+        self.part_indicator_duration = 2.0  # How long part indicator shows
+        self.part_indicator_silence = 2.5  # Silence before main narration starts
+
+        # ========== VIDEO LIMITS ==========
+        self.max_stories_total = 1  # Total stories to process
+        self.max_videos_per_story = 3  # Max parts per story
+        self.max_video_duration = 120  # Max seconds per video (2 minutes)
 
         # Background video cycling
         self.video_counter = 0
@@ -330,7 +377,12 @@ class FixedSequentialRedditVideoCreator:
         print(f"✅ Total narration: {total_audio_duration:.1f}s")
         return timings
 
-    def create_overlay_clip(self, text, duration, start, color='yellow'):
+    def create_overlay_clip(self, text, duration, start, color=None):
+        """Create text overlay clip using configurable settings"""
+        # Use default color if none specified
+        if color is None:
+            color = self.text_color
+
         display_text = textwrap.fill(text, width=self.wrap_chars_per_line)
         adjusted_start = start + self.text_start_delay
         adjusted_duration = max(0.1, duration)
@@ -340,8 +392,8 @@ class FixedSequentialRedditVideoCreator:
             fontsize=self.fontsize_sentence,
             font=self.default_font,
             color=color,
-            stroke_color='black',
-            stroke_width=5,
+            stroke_color=self.text_stroke_color,
+            stroke_width=self.text_stroke_width,  # Now configurable
             method='caption',
             size=(self.textblock_width, None),
             align='center'
@@ -373,7 +425,7 @@ class FixedSequentialRedditVideoCreator:
 
         # Calculate narration duration
         total_narration_duration = sum(t['audio_duration'] for t in overlays_info) + (
-                    len(overlays_info) * self.text_transition_gap)
+                len(overlays_info) * self.text_transition_gap)
         print(f"📊 Narration: {total_narration_duration:.1f}s")
 
         # Loop background if needed
@@ -397,9 +449,9 @@ class FixedSequentialRedditVideoCreator:
             part_indicator = f"Part {part_number} of {total_parts}"
             part_overlay = self.create_overlay_clip(
                 part_indicator,
-                duration=2.0,
+                duration=self.part_indicator_duration,  # Now configurable
                 start=0,
-                color='cyan'
+                color=self.part_indicator_color  # Now configurable
             )
             final_overlays.append(part_overlay)
 
@@ -409,7 +461,7 @@ class FixedSequentialRedditVideoCreator:
             # Adjust start time for part indicator
             start_time = t['start']
             if total_parts > 1:
-                start_time += 2.5
+                start_time += self.part_indicator_silence  # Now configurable
 
             print(f"🎯 Chunk {i + 1}: {start_time:.1f}s→{start_time + t['audio_duration']:.1f}s")
 
@@ -417,7 +469,7 @@ class FixedSequentialRedditVideoCreator:
                 t['chunk'],
                 duration=t['text_duration'],
                 start=start_time,
-                color='yellow'
+                color=self.text_color  # Now configurable
             ))
 
         # Compose video
@@ -426,7 +478,7 @@ class FixedSequentialRedditVideoCreator:
 
         # Handle part indicator audio
         if total_parts > 1:
-            silence_duration = 2.5
+            silence_duration = self.part_indicator_silence  # Now configurable
             temp_silence_path = self.temp_path / f"silence_{story_index}_{part_number}_{datetime.now().strftime('%H%M%S_%f')}.wav"
 
             silence_audio = AudioSegment.silent(duration=int(silence_duration * 1000))
@@ -598,14 +650,15 @@ class FixedSequentialRedditVideoCreator:
                 except:
                     print(f"   • {Path(video).name}")
 
-        print(f"\n💡 FIXED Features:")
-        print(f"   • ✅ STRICT LIMITS: {self.max_stories_total} stories max")
-        print(f"   • ✅ 2-minute video limit with auto-splitting")
-        print(f"   • ✅ Background video cycling (uses ALL videos)")
-        print(f"   • ✅ {self.words_per_minute} WPM fast speech")
-        print(f"   • ✅ NO threading (reliable completion)")
-        print(f"   • ✅ Smart filenames with keywords")
-        print(f"   • ✅ Perfect for testing setup")
+        print(f"\n💡 ALL CONFIGURED Features:")
+        print(f"   • ✅ Font size: {self.fontsize_sentence}")
+        print(f"   • ✅ Stroke width: {self.text_stroke_width} (thicker)")
+        print(f"   • ✅ Text color: {self.text_color}")
+        print(f"   • ✅ Speech speed: {self.words_per_minute} WPM")
+        print(f"   • ✅ Dynamic ImageMagick detection")
+        print(f"   • ✅ Date-wise folders: {self.output_path.name}")
+        print(f"   • ✅ Max stories: {self.max_stories_total}")
+        print(f"   • ✅ Max video duration: {self.max_video_duration}s")
 
 
 def main():

@@ -1,8 +1,8 @@
 """
-mobile_youtube_shorts_processor_DYNAMIC_FOLDERS.py
+mobile_youtube_shorts_processor_NO_REPETITION.py
 
-DYNAMIC FOLDERS VERSION - Creates dynamic subfolders inside processed_backgrounds
-Creates 8 × 3-minute videos for mobile YouTube Shorts without audio
+NO REPETITION VERSION - Prevents selecting the same video multiple times
+Creates videos for mobile YouTube Shorts without audio using unique source videos
 
 Dependencies:
 pip install moviepy==1.0.3 opencv-python pillow pyyaml
@@ -39,43 +39,31 @@ def create_dynamic_folder(base_dir, input_dir, folder_type="datetime", custom_na
     base_path.mkdir(exist_ok=True)
 
     if folder_type == "datetime":
-        # Create folder based on current date and time
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         dynamic_folder = base_path / f"batch_{timestamp}"
-
     elif folder_type == "source":
-        # Create folder based on input source directory name
         source_name = Path(input_dir).name
         timestamp = datetime.now().strftime("%Y%m%d_%H%M")
         dynamic_folder = base_path / f"{source_name}_{timestamp}"
-
     elif folder_type == "batch":
-        # Create sequential batch folders
         counter = 1
         while True:
             dynamic_folder = base_path / f"batch_{counter:03d}"
             if not dynamic_folder.exists():
                 break
             counter += 1
-
     elif folder_type == "custom":
-        # Use custom name with timestamp
         if custom_name:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M")
             dynamic_folder = base_path / f"{custom_name}_{timestamp}"
         else:
-            # Fallback to datetime if no custom name
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             dynamic_folder = base_path / f"custom_{timestamp}"
-
     else:
-        # Default fallback
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         dynamic_folder = base_path / f"output_{timestamp}"
 
-    # Create the dynamic folder
     dynamic_folder.mkdir(exist_ok=True)
-
     print(f"📁 Created dynamic folder: {dynamic_folder}")
     return str(dynamic_folder)
 
@@ -153,12 +141,12 @@ def generate_unique_filename(output_dir, base_name, extension=".mp4"):
             return str(fallback_path)
 
 # ===============================================
-# MOBILE YOUTUBE SHORTS PROCESSOR - DYNAMIC FOLDERS
+# MOBILE YOUTUBE SHORTS PROCESSOR - NO REPETITION
 # ===============================================
 
-class MobileYoutubeShortsProcessorDynamic:
+class MobileYoutubeShortsProcessorNoRepetition:
     def __init__(self, input_dir, output_dir, target_count=8, target_duration=180):
-        """Initialize for mobile YouTube Shorts with dynamic folder support"""
+        """Initialize for mobile YouTube Shorts with NO VIDEO REPETITION"""
 
         if not setup_moviepy_dependencies():
             raise RuntimeError("MoviePy dependencies not properly configured")
@@ -188,6 +176,7 @@ class MobileYoutubeShortsProcessorDynamic:
         print(f"🔇 Audio: DISABLED")
         print(f"🛡️ Overwrite Protection: ENABLED")
         print(f"🔗 Video Combining: ENABLED")
+        print(f"🚫 Video Repetition: PREVENTED (each video used only once)")
 
     def validate_clip(self, clip, operation_name="operation"):
         """Validate clip before operations"""
@@ -299,19 +288,20 @@ class MobileYoutubeShortsProcessorDynamic:
             print(f"  ❌ Error in mobile crop: {e}")
             return None
 
-    def combine_videos_to_target_duration(self, video_pool):
-        """Combine multiple videos to reach exactly target duration"""
+    def combine_videos_to_target_duration_no_repeat(self, available_videos):
+        """Combine multiple videos to reach target duration WITHOUT REPETITION"""
         combined_clips = []
         total_duration = 0
         used_videos = []
 
-        print(f"  🔗 Combining videos to reach {self.target_duration/60:.1f} minutes...")
+        print(f"  🔗 Combining videos to reach {self.target_duration/60:.1f} minutes (NO REPETITION)...")
+        print(f"  📊 Available videos for selection: {len(available_videos)}")
 
-        available_videos = video_pool.copy()
+        # Shuffle available videos for randomness
         random.shuffle(available_videos)
 
         while total_duration < self.target_duration and available_videos:
-            video = available_videos.pop(0)
+            video = available_videos.pop(0)  # REMOVE video from pool after selection
             video_path = video['path']
             video_duration = video['duration']
 
@@ -352,15 +342,17 @@ class MobileYoutubeShortsProcessorDynamic:
 
         if not combined_clips:
             print(f"    ❌ No valid clips to combine")
-            return None
+            return None, available_videos
 
         if total_duration < 60:
             print(f"    ⚠️ Combined duration too short ({total_duration:.1f}s), skipping")
             for clip in combined_clips:
                 clip.close()
-            return None
+            return None, available_videos
 
         print(f"    ✅ Combined {len(combined_clips)} clips, total: {total_duration:.1f}s")
+        print(f"    🚫 Used videos (won't repeat): {', '.join(used_videos[:3])}{'...' if len(used_videos) > 3 else ''}")
+        print(f"    📊 Remaining videos for future use: {len(available_videos)}")
 
         try:
             if len(combined_clips) == 1:
@@ -368,16 +360,16 @@ class MobileYoutubeShortsProcessorDynamic:
             else:
                 final_clip = self.concatenate_videoclips(combined_clips)
 
-            return final_clip
+            return final_clip, available_videos
 
         except Exception as e:
             print(f"    ❌ Error combining clips: {e}")
             for clip in combined_clips:
                 clip.close()
-            return None
+            return None, available_videos
 
-    def create_mobile_shorts_with_combining(self):
-        """Create mobile YouTube Shorts by combining multiple videos"""
+    def create_mobile_shorts_no_repetition(self):
+        """Create mobile YouTube Shorts with NO VIDEO REPETITION"""
         video_files = self.get_video_files()
 
         if not video_files:
@@ -386,6 +378,7 @@ class MobileYoutubeShortsProcessorDynamic:
 
         print(f"\n🎬 Analyzing video durations...")
 
+        # Create initial video pool
         video_pool = []
         total_duration = 0
 
@@ -402,6 +395,8 @@ class MobileYoutubeShortsProcessorDynamic:
 
         print(f"\n📊 Total available content: {total_duration:.1f}s ({total_duration/60:.1f}m)")
 
+        # Create a COPY of video pool for processing (preserves original)
+        available_videos = video_pool.copy()
         created_videos = []
 
         if self.target_count == 0 or self.target_count is None:
@@ -415,13 +410,17 @@ class MobileYoutubeShortsProcessorDynamic:
         for video_num in range(1, video_limit + 1):
             print(f"\n🎯 Creating mobile short {video_num}/{video_limit} ({self.target_duration/60:.1f} minutes)...")
 
-            combined_clip = self.combine_videos_to_target_duration(video_pool)
+            if not available_videos:
+                print(f"  ❌ No more unique videos available for video {video_num}")
+                print(f"  💡 All videos have been used. Created {video_num-1} unique videos.")
+                break
+
+            # Combine videos without repetition
+            combined_clip, remaining_videos = self.combine_videos_to_target_duration_no_repeat(available_videos)
+            available_videos = remaining_videos  # Update available videos
 
             if combined_clip is None:
                 print(f"  ❌ Failed to combine videos for segment {video_num}")
-                if len(video_pool) == 0:
-                    print(f"  💡 No more videos available for combining")
-                    break
                 continue
 
             try:
@@ -440,7 +439,7 @@ class MobileYoutubeShortsProcessorDynamic:
                 output_path = generate_unique_filename(self.output_dir, base_filename, ".mp4")
                 output_filename = os.path.basename(output_path)
 
-                print(f"  💾 Exporting: {output_filename} (MAXIMUM QUALITY, NO AUDIO, COMBINED)")
+                print(f"  💾 Exporting: {output_filename} (MAXIMUM QUALITY, NO AUDIO, NO REPETITION)")
 
                 mobile_clip.write_videofile(
                     str(output_path),
@@ -472,8 +471,8 @@ class MobileYoutubeShortsProcessorDynamic:
         return created_videos
 
 def main():
-    """Main function for mobile YouTube Shorts creation with DYNAMIC FOLDERS"""
-    print("📱 Mobile YouTube Shorts Processor - DYNAMIC FOLDERS VERSION")
+    """Main function for mobile YouTube Shorts creation with NO REPETITION"""
+    print("📱 Mobile YouTube Shorts Processor - NO REPETITION VERSION")
     print("=" * 75)
 
     try:
@@ -481,7 +480,6 @@ def main():
             print(f"❌ Input directory not found: {INPUT_DIR}")
             return
 
-        # Create DYNAMIC subfolder inside processed_backgrounds
         print(f"\n📁 Creating dynamic folder structure...")
         print(f"Base directory: {OUTPUT_DIR}")
         print(f"Dynamic folder type: {DYNAMIC_FOLDER_TYPE}")
@@ -496,22 +494,22 @@ def main():
         print("🚀 Initializing Mobile YouTube Shorts Processor...")
 
         target_duration_seconds = VIDEO_DURATION_MINUTES * 60
-        processor = MobileYoutubeShortsProcessorDynamic(
+        processor = MobileYoutubeShortsProcessorNoRepetition(
             INPUT_DIR,
-            dynamic_output_dir,  # Use the dynamic folder
+            dynamic_output_dir,
             target_count=NUMBER_OF_VIDEOS,
             target_duration=target_duration_seconds
         )
 
-        print(f"\n🎯 Creating mobile YouTube Shorts in dynamic folder...")
-        created_videos = processor.create_mobile_shorts_with_combining()
+        print(f"\n🎯 Creating mobile YouTube Shorts (NO VIDEO REPETITION)...")
+        created_videos = processor.create_mobile_shorts_no_repetition()
 
         print(f"\n🎉 Processing complete!")
         print(f"📁 Created {len(created_videos)} mobile shorts in:")
         print(f"   {dynamic_output_dir}")
 
         if created_videos:
-            print("\n📋 Created mobile YouTube Shorts:")
+            print("\n📋 Created mobile YouTube Shorts (NO REPETITION):")
             total_size = 0
 
             for i, video_path in enumerate(created_videos, 1):
@@ -523,6 +521,14 @@ def main():
             print(f"\n📊 Total output: {total_size:.1f} MB")
             print(f"\n📁 All files saved in: {Path(dynamic_output_dir).name}")
             print(f"\n✅ Ready for mobile YouTube Shorts!")
+            print(f"\n📱 Features:")
+            print("  • ✅ COMBINES multiple short videos to reach exactly 3 minutes")
+            print("  • ✅ ORIGINAL SCALE PRESERVED")
+            print("  • ✅ Perfect 9:16 aspect ratio for mobile")
+            print("  • ✅ NO AUDIO")
+            print("  • ✅ OVERWRITE PROTECTION ENABLED")
+            print("  • ✅ Maximum quality encoding")
+            print("  • 🚫 NO VIDEO REPETITION - each source video used only once")
 
     except Exception as e:
         print(f"\n❌ Critical error: {e}")
